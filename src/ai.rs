@@ -1,490 +1,526 @@
 // =============================================================================
-//  ai.rs — OpenRouter API integration
+//  ai.rs — AI backend integration (OpenRouter + Ollama)
 //  https://github.com/paulfxyz/yo-rust
 //
 //  OVERVIEW
 //  ────────
 //  This module is the only place in yo-rust that touches the network.
-//  It does three things:
+//  It abstracts over two backends behind a single public function:
 //
-//    1. suggest_commands()     — POST to OpenRouter, return parsed Suggestion
-//    2. intent_is_api_change() — regex scan to detect "please reconfigure me"
-//    3. build_context()        — gather OS/arch/CWD/shell for richer prompts
+//    suggest_commands(cfg, history_ctx, prompt) → Result<Suggestion>
 //
-//  THE CORE CHALLENGE: GETTING RELIABLE STRUCTURED OUTPUT FROM AN LLM
-//  ──────────────────────────────────────────────────────────────────
-//  The single hardest engineering problem in this entire project isn't the
-//  HTTP call or the Rust types — it's making the model output *exactly* what
-//  we need, every time, without surrounding prose or markdown decoration.
+//  The caller never needs to know whether the request went to OpenRouter
+//  or a local Ollama instance — the same Suggestion struct comes back.
 //
-//  LLMs are probabilistic text completers.  Ask them to "output just a shell
-//  command" and they will, often, do things like:
+//  BACKENDS
+//  ────────
+//  OpenRouter  https://openrouter.ai/api/v1/chat/completions
+//    • OpenAI-compatible chat completions API
+//    • Requires an API key in the Authorization header
+//    • Supports any model on OpenRouter's catalogue (100+ models)
+//    • Used when config.backend == "openrouter"
+//
+//  Ollama      http://localhost:11434/api/chat  (or custom URL)
+//    • Local model inference — no API key, no network, complete privacy
+//    • Must have Ollama installed and a model pulled (e.g. `ollama pull llama3.2`)
+//    • Uses Ollama's native /api/chat endpoint (not the OpenAI-compat endpoint)
+//      because the native format is more stable across Ollama versions
+//    • Used when config.backend == "ollama"
+//
+//  THE CORE CHALLENGE: RELIABLE STRUCTURED OUTPUT FROM AN LLM
+//  ─────────────────────────────────────────────────────────────
+//  Every LLM wants to be helpful and verbose.  Ask "give me a shell command
+//  to list files" and you'll often get:
 //
 //    "Here's a command you can use: `ls -la`"
-//    "```bash\nls -la\n```"
-//    "You can run `ls -la` to list files."
-//    "I suggest the following command:\n  ls -la\nThis will list..."
+//    "```bash\nls -la\n```\nThis lists all files including hidden ones."
 //
-//  None of these are machine-parseable as a bare command string.
+//  Neither is machine-parseable as a bare command string.
 //
-//  SOLUTION: JSON ENVELOPE WITH A STRICT SCHEMA
-//  ─────────────────────────────────────────────
-//  Instead of asking for "a command", we ask for a JSON object:
+//  SOLUTION: STRICT JSON ENVELOPE
+//  ───────────────────────────────
+//  The system prompt instructs the model to always reply with this exact JSON:
 //
-//    { "commands": ["cmd1", "cmd2"], "explanation": "one sentence" }
+//    {
+//      "commands": ["cmd1", "cmd2"],
+//      "explanation": "one plain-English sentence"
+//    }
 //
-//  This works because:
-//    a) LLMs are trained extensively on JSON and reliably produce valid JSON
-//       when the schema is specified clearly.
-//    b) The schema forces a separation between the command strings (machine-
-//       readable) and the explanation (human-readable).  The model can't
-//       accidentally mix them.
-//    c) We can validate and parse deterministically with serde_json.
-//    d) An array naturally handles multi-step answers ("first do X, then Y")
-//       without requiring us to split on newlines or semicolons.
+//  Why this works reliably:
+//    a) Modern LLMs have seen enormous amounts of JSON in training — they are
+//       very good at following a JSON schema when it's stated clearly.
+//    b) Separating commands (machine-readable) from explanation (human-readable)
+//       prevents the model from accidentally mixing them.
+//    c) serde_json gives us deterministic parsing with clear error messages.
+//    d) An array handles multi-step answers without string splitting.
+//    e) We strip markdown fences as a fallback — belt and suspenders.
 //
-//  TEMPERATURE: WHY 0.2?
-//  ──────────────────────
-//  Temperature controls how "creative" the model is.  At temperature=1.0
-//  the model samples broadly from its probability distribution — good for
-//  writing poetry, bad for shell commands where `rm -rf /` and `rm -rf ./`
-//  are very different outcomes.
+//  MULTI-TURN CONTEXT
+//  ──────────────────
+//  v2.0.0 introduces follow-up prompts ("now do the same for staging").
+//  We pass the last N confirmed prompt/command pairs as prior "user" and
+//  "assistant" turns in the messages array.  This gives the model enough
+//  conversational context to resolve pronouns and relative references.
 //
-//  At temperature=0.2:
-//    • The model almost always picks the highest-probability token at each step
-//    • Output is deterministic enough to be predictable and safe
-//    • It is NOT fully deterministic (temperature=0 would be) — a small amount
-//      of variation helps it handle natural language variation in prompts
-//    • Empirically, 0.2 gives correct commands ~95% of the time across tested
-//      models (gpt-4o-mini, claude-3-haiku, llama-3.3-70b)
+//  Each prior turn is injected as:
+//    { role: "user",      content: "<prior prompt>" }
+//    { role: "assistant", content: "<prior commands JSON>" }
 //
-//  CONTEXT INJECTION: WHY IT MATTERS
-//  ────────────────────────────────────
-//  A user on macOS ARM typing "open the downloads folder" expects `open ~/Downloads`
-//  not `xdg-open ~/Downloads` (Linux) or `start %USERPROFILE%\Downloads` (Windows).
-//  Without context, the model must guess — and often guesses wrong.
+//  This mirrors how a real multi-turn conversation looks to the model and
+//  ensures it interprets follow-ups correctly.
 //
-//  By prepending `OS=macos ARCH=aarch64 CWD=/Users/paul SHELL=/bin/zsh` to every
-//  request, we give the model enough signal to:
-//    • Choose macOS-specific commands (open, pbcopy, pbpaste, brew)
-//    • Avoid Linux-only commands (apt, systemctl, xdg-*)
-//    • Use the right path separator and home directory expansion
-//    • Produce commands relative to the current directory when relevant
+//  TEMPERATURE: 0.2
+//  ─────────────────
+//  Shell commands are not creative.  At temperature=0.2 the model consistently
+//  picks the most conventional, highest-probability command — no hallucinated
+//  flags, no invented tool names.  Tested across GPT-4o-mini, Claude 3 Haiku,
+//  Llama 3.2, and Mistral.
 //
-//  This is the highest-leverage context token we can add — 4 fields, massive
-//  impact on correctness.
+//  CONTEXT INJECTION
+//  ─────────────────
+//  OS, architecture, CWD, and shell are prepended to every user message.
+//  This single addition has the largest impact on command accuracy:
+//  `brew` vs `apt`, `open` vs `xdg-open`, `pbcopy` vs `xclip`,
+//  arm64 vs x86_64 binary downloads, Windows-native paths vs POSIX paths.
 // =============================================================================
 
 use crate::config::Config;
+use crate::context::ConversationContext;
+use crate::shell::ShellKind;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
-//  Public types
+//  Public output type
 // =============================================================================
 
-/// The result of one AI round-trip: a list of commands to run and an optional
-/// plain-English explanation of what they do.
+/// The result of one AI round-trip.
 ///
-/// `commands` is a Vec because the model sometimes returns multi-step answers:
-///   e.g. "make a directory AND move a file into it" → two separate commands.
-/// Keeping them separate allows execute_commands() to report success/failure
-/// per command and to echo each one individually.
-///
-/// `explanation` is Option<String> because we don't crash if the model omits
-/// it — the commands themselves are what matters.  In practice every well-
-/// behaved model always includes it.
-#[derive(Debug)]
+/// Contains the shell commands to run (machine-readable) and an optional
+/// plain-English explanation (human-readable, shown before Y/N prompt).
+#[derive(Debug, Clone)]
 pub struct Suggestion {
-    /// Shell commands to execute, in order.  Each entry is passed verbatim to
-    /// `sh -c`, so pipelines, redirections, and chained commands all work.
+    /// Shell commands to execute in order.  Each is passed verbatim to the
+    /// OS shell (`sh -c` on Unix, `cmd /C` on Windows), so pipelines,
+    /// redirections, globs, and compound operators all work correctly.
     pub commands: Vec<String>,
 
-    /// Human-readable explanation of what the commands accomplish.
-    /// Displayed to the user before the Y/N confirmation prompt.
+    /// One-sentence description of what the commands do.
+    /// Displayed before the confirmation prompt so the user can make an
+    /// informed decision.  `None` if the model omitted it (shouldn't happen
+    /// with a well-behaved model and our system prompt, but we handle it).
     pub explanation: Option<String>,
 }
 
 // =============================================================================
-//  OpenRouter request / response wire types
-//
-//  These mirror the OpenAI-compatible chat completions API that OpenRouter
-//  exposes.  They are private to this module — callers only see `Suggestion`.
-//
-//  Lifetime parameter `'a` on ChatRequest and Message means these structs
-//  borrow their string fields from the caller's data rather than owning copies.
-//  This avoids one clone() per request on model slug and prompt text.
+//  OpenRouter wire types
 // =============================================================================
 
-/// Outgoing request body serialised to JSON and POSTed to OpenRouter.
+/// Request body for the OpenRouter (OpenAI-compatible) chat completions API.
+/// Lifetime `'a` borrows model slug and message content — avoids cloning per request.
 #[derive(Serialize)]
-struct ChatRequest<'a> {
-    /// OpenRouter model slug, e.g. "openai/gpt-4o-mini".
-    model: &'a str,
-
-    /// The conversation — for yo-rust this is always exactly two messages:
-    /// [system prompt, user prompt].  We don't maintain multi-turn history
-    /// because each "yo ›" invocation is a fresh, independent request.
-    messages: Vec<Message<'a>>,
-
-    /// Sampling temperature.  See module-level docs for why 0.2.
+struct OrChatRequest<'a> {
+    model:      &'a str,
+    messages:   Vec<OrMessage<'a>>,
     temperature: f32,
-
-    /// Hard cap on output tokens.  512 is generous for shell commands — the
-    /// longest realistic answer (5–6 chained commands + explanation) fits in
-    /// ~200 tokens.  We cap at 512 to avoid surprise costs on verbose models.
-    max_tokens: u32,
+    max_tokens:  u32,
 }
 
-/// A single message in the conversation.
 #[derive(Serialize)]
-struct Message<'a> {
-    /// "system" or "user".  We never send "assistant" turns — no history.
-    role: &'a str,
-
-    /// Raw message text.  For the system message this is SYSTEM_PROMPT.
-    /// For the user message this is the augmented prompt with context prepended.
-    content: &'a str,
+struct OrMessage<'a> {
+    role:    &'a str,
+    content: String, // owned — context turns may be built dynamically
 }
 
-/// Top-level shape of the OpenRouter JSON response.
-/// We only deserialise the fields we care about; unknown fields are ignored
-/// (serde's default when no `deny_unknown_fields` is set).
 #[derive(Deserialize)]
-struct ChatResponse {
-    /// Array of completion choices.  OpenRouter always returns exactly one
-    /// when `n` is not set (which we don't set).  We take `choices[0]`.
-    choices: Vec<Choice>,
+struct OrChatResponse {
+    choices: Vec<OrChoice>,
 }
 
-/// One completion choice.
 #[derive(Deserialize)]
-struct Choice {
-    message: ResponseMessage,
+struct OrChoice {
+    message: OrResponseMessage,
 }
 
-/// The assistant's reply.
 #[derive(Deserialize)]
-struct ResponseMessage {
-    /// The text content of the reply.  We expect valid JSON here.
+struct OrResponseMessage {
+    content: String,
+}
+
+// =============================================================================
+//  Ollama wire types
+//  Docs: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion
+// =============================================================================
+
+#[derive(Serialize)]
+struct OllamaChatRequest {
+    model:    String,
+    messages: Vec<OllamaMessage>,
+    stream:   bool,  // false = single response JSON, not a streaming SSE
+    options:  OllamaOptions,
+}
+
+#[derive(Serialize)]
+struct OllamaMessage {
+    role:    String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct OllamaOptions {
+    temperature: f32,
+    num_predict: u32, // Ollama's equivalent of max_tokens
+}
+
+#[derive(Deserialize)]
+struct OllamaChatResponse {
+    message: OllamaResponseMessage,
+}
+
+#[derive(Deserialize)]
+struct OllamaResponseMessage {
     content: String,
 }
 
 // =============================================================================
 //  System prompt
 //
-//  This is the most important piece of "code" in the project.  It is a set of
-//  instructions baked into every API request that constrains the model's output
-//  format and safety behaviour.
+//  This is the most important "code" in the project.  It constrains the model's
+//  output to the exact JSON schema we need, and encodes our safety preferences.
 //
-//  DESIGN NOTES
-//  ────────────
-//  Rule 1 ("Reply ONLY with a JSON object") is stated first and repeated in
-//  Rule 2 via the schema.  Repetition matters: transformer attention is not
-//  perfect, and a constraint stated once can be "forgotten" by the model mid-
-//  generation, especially for longer outputs.
-//
-//  Rule 3 ("minimal set of commands") discourages verbose multi-command
-//  answers when a single pipeline would do the same job.
-//
-//  Rule 4 ("POSIX-compatible") nudges the model away from bash-isms like
-//  `[[` double brackets or `local` in non-function context, which break on
-//  /bin/sh.  This is important because we invoke commands via `sh -c`, not
-//  `bash -c`.
-//
-//  Rule 5 (safety for destructive commands) is a soft guardrail — it asks the
-//  model to add a comment or flag rather than refusing outright.  A hard refusal
-//  would be frustrating (e.g. "delete the temp folder" is a completely normal
-//  request).  We rely on the Y/N confirmation as the primary safety mechanism.
-//
-//  Rule 7 (fallback for non-shell requests) prevents the model from producing
-//  gibberish when the user accidentally asks a question ("what is Docker?")
-//  instead of a task.  The empty commands array is a clean signal to ui.rs
-//  to print a "no commands suggested" message.
+//  Design notes:
+//    - Rules are numbered for easy reference when debugging model behaviour
+//    - Rule 1 and 2 are redundant by design: restating the format constraint
+//      twice reduces the chance of the model "forgetting" it mid-generation
+//    - Rule 4 specifies POSIX sh compatibility because we invoke via `sh -c`
+//      on Unix; on Windows we map to cmd.exe — see build_context()
+//    - Rule 5 is a soft safety rail — it asks for a comment, not a refusal,
+//      so legitimate destructive operations still work with the Y/N gate
+//    - Rule 7 provides a clean escape hatch for non-shell requests so the
+//      empty-commands case is handled gracefully in ui.rs
 // =============================================================================
 const SYSTEM_PROMPT: &str = r#"You are yo-rust, a terminal assistant that converts natural language requests into shell commands.
 
 RULES:
-1. Reply ONLY with a JSON object — no prose, no markdown fences, no extra text.
+1. Reply ONLY with a valid JSON object — no prose, no markdown fences, no preamble.
 2. The JSON must match this exact schema:
    {
      "commands": ["<cmd1>", "<cmd2>"],
-     "explanation": "<one concise sentence describing what the commands do>"
+     "explanation": "<one concise sentence describing what the commands accomplish>"
    }
 3. Produce the minimal set of commands required — prefer composable one-liners.
-4. Commands must be POSIX sh-compatible. Prefer portable syntax over bash-isms.
-5. Never suggest destructive commands (rm -rf /, mkfs, dd to disk) without adding a safety flag or comment.
-6. If the request is ambiguous, make the safest reasonable assumption.
+4. The system context always includes a SHELL= and syntax= field:
+   - syntax=posix      → use POSIX sh syntax (pipes, redirections, &&, $VAR)
+   - syntax=powershell → use PowerShell syntax; SHELL=powershell5 means avoid && (use ; or -and instead); SHELL=powershell7 supports &&
+   - syntax=cmd        → use cmd.exe syntax (pipe with |, chain with & not &&, use %VAR%)
+   Always match the syntax to the syntax= field, not just the OS.
+5. Never suggest catastrophically destructive commands (rm -rf /, format C:, dd to a disk device) without adding an explicit safety comment inside the command string.
+6. If the request is ambiguous, make the safest reasonable interpretation.
 7. If the request cannot be expressed as shell commands, return:
    { "commands": [], "explanation": "I cannot express this as a shell command." }
 "#;
 
 // =============================================================================
-//  suggest_commands
-//
-//  The main public API of this module.  Takes the current config and the user's
-//  raw prompt, returns a Suggestion or a boxed error.
-//
-//  ERROR TYPES
-//  ───────────
-//  We return Box<dyn std::error::Error> rather than a custom error enum for
-//  simplicity.  The errors that can occur here are:
-//    • reqwest::Error     — network failure, timeout, TLS error
-//    • HTTP 4xx/5xx       — invalid API key, rate limit, model unavailable
-//    • serde_json::Error  — model returned non-JSON or JSON that doesn't match
-//                           our expected schema
-//    • &str literal       — "Empty response from model"
-//  The caller (main.rs) treats all of these identically: print to stderr,
-//  loop back to the prompt.  A custom enum would add complexity without benefit.
+//  suggest_commands — main public API
 // =============================================================================
+
+/// Call the configured AI backend and return a shell command suggestion.
+///
+/// # Arguments
+/// * `cfg`     — user configuration (backend, model, api_key, ollama_url)
+/// * `context` — rolling window of prior prompt/command pairs for follow-up support
+/// * `prompt`  — the user's current natural-language request
 pub fn suggest_commands(
-    cfg: &Config,
-    user_prompt: &str,
+    cfg:     &Config,
+    context: &ConversationContext,
+    prompt:  &str,
 ) -> Result<Suggestion, Box<dyn std::error::Error>> {
-    // Build the augmented user message by prepending system context.
-    // This is inserted into the *user* message rather than the *system* message
-    // because some models (especially instruction-tuned ones) pay more attention
-    // to user-turn content when deciding which tools/commands to suggest.
-    let ctx       = build_context();
-    let augmented = format!("System context: {ctx}\n\nUser request: {user_prompt}");
-
-    // Assemble the request body.
-    // Note: ChatRequest borrows cfg.model and augmented — no allocations here
-    // beyond the Vec for messages.
-    let request_body = ChatRequest {
-        model: &cfg.model,
-        messages: vec![
-            Message { role: "system", content: SYSTEM_PROMPT },
-            Message { role: "user",   content: &augmented    },
-        ],
-        temperature: 0.2,   // See module-level docs for why 0.2
-        max_tokens:  512,   // Generous cap — real answers are ~100–200 tokens
-    };
-
-    // ── HTTP client ───────────────────────────────────────────────────────────
-    // We create a new Client per call.  This is slightly less efficient than
-    // keeping a global Client (which would reuse the TLS session and connection
-    // pool), but yo-rust makes one request per user turn with multi-second gaps
-    // between them — connection reuse would almost never kick in anyway.
-    // A future optimisation: make Client a lazy_static or once_cell global.
-    let client = reqwest::blocking::Client::new();
-
-    let resp = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        // Bearer token auth — the API key is read from config, never hardcoded.
-        .header("Authorization", format!("Bearer {}", cfg.api_key))
-        .header("Content-Type", "application/json")
-        // OpenRouter requires HTTP-Referer for rate-limit attribution.
-        // Without it, requests may be throttled more aggressively.
-        .header("HTTP-Referer", "https://github.com/paulfxyz/yo-rust")
-        // X-Title appears in the OpenRouter dashboard under "app name".
-        .header("X-Title", "yo-rust")
-        // `.json()` serialises request_body to JSON, sets Content-Type, and
-        // also sets Accept: application/json on the request.
-        .json(&request_body)
-        .send()?; // The `?` operator propagates reqwest::Error upward.
-
-    // ── Response status check ─────────────────────────────────────────────────
-    // reqwest does NOT automatically error on 4xx/5xx — we must check manually.
-    // Common failure codes from OpenRouter:
-    //   401 — invalid or expired API key
-    //   402 — insufficient credits on the account
-    //   429 — rate limit exceeded
-    //   503 — model temporarily unavailable or overloaded
-    if !resp.status().is_success() {
-        let status = resp.status();
-        // Consume the body to get the error message from OpenRouter.
-        // `.unwrap_or_default()` gives an empty string if the body isn't UTF-8.
-        let body = resp.text().unwrap_or_default();
-        return Err(format!("OpenRouter returned {status}: {body}").into());
+    match cfg.backend.as_str() {
+        "ollama" => suggest_ollama(cfg, context, prompt),
+        _        => suggest_openrouter(cfg, context, prompt),
     }
-
-    // ── Deserialise response ──────────────────────────────────────────────────
-    // `.json::<ChatResponse>()` reads the response body as UTF-8 and runs
-    // serde_json::from_str on it.  Unknown fields are silently ignored.
-    let chat: ChatResponse = resp.json()?;
-
-    // Extract the first (and only) choice's message content.
-    // `.into_iter().next()` avoids cloning the entire choices Vec just to read
-    // the first element — it moves ownership of the first Choice out.
-    let raw_content = chat
-        .choices
-        .into_iter()
-        .next()
-        .map(|c| c.message.content)
-        .ok_or("Empty response from model")?;
-
-    // Delegate JSON parsing to a separate function to keep this one focused.
-    parse_suggestion(&raw_content)
 }
 
 // =============================================================================
-//  parse_suggestion
+//  OpenRouter backend
+// =============================================================================
+
+fn suggest_openrouter(
+    cfg:     &Config,
+    context: &ConversationContext,
+    prompt:  &str,
+) -> Result<Suggestion, Box<dyn std::error::Error>> {
+    // Build the messages array:
+    //   [system] + [prior turn pairs...] + [current user message]
+    let mut messages: Vec<OrMessage> = Vec::new();
+
+    // System message — always first
+    messages.push(OrMessage {
+        role:    "system",
+        content: SYSTEM_PROMPT.to_string(),
+    });
+
+    // Prior conversation turns for follow-up context
+    for turn in context.turns() {
+        // Prior user prompt
+        messages.push(OrMessage {
+            role:    "user",
+            content: format!("System context: {}\n\nUser request: {}", build_context(), turn.prompt),
+        });
+        // Prior assistant response (reconstructed as JSON)
+        messages.push(OrMessage {
+            role:    "assistant",
+            content: format!(
+                r#"{{"commands": [{}], "explanation": "Previous command."}}"#,
+                turn.commands_summary
+                    .split(" ; ")
+                    .map(|c| format!("\"{}\"", c.replace('"', "\\\"")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        });
+    }
+
+    // Current user message — augmented with system context
+    let user_content = format!(
+        "System context: {}\n\nUser request: {}",
+        build_context(),
+        prompt
+    );
+    messages.push(OrMessage { role: "user", content: user_content });
+
+    let body = OrChatRequest {
+        model:       &cfg.model,
+        messages,
+        temperature: 0.2,
+        max_tokens:  512,
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+
+    let resp = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization",  format!("Bearer {}", cfg.api_key))
+        .header("Content-Type",   "application/json")
+        .header("HTTP-Referer",   "https://github.com/paulfxyz/yo-rust")
+        .header("X-Title",        "yo-rust")
+        .json(&body)
+        .send()?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text   = resp.text().unwrap_or_default();
+        return Err(format!("OpenRouter {status}: {text}").into());
+    }
+
+    let chat: OrChatResponse = resp.json()?;
+    let raw = chat.choices.into_iter().next()
+        .map(|c| c.message.content)
+        .ok_or("Empty response from OpenRouter")?;
+
+    parse_suggestion(&raw)
+}
+
+// =============================================================================
+//  Ollama backend
+// =============================================================================
+
+fn suggest_ollama(
+    cfg:     &Config,
+    context: &ConversationContext,
+    prompt:  &str,
+) -> Result<Suggestion, Box<dyn std::error::Error>> {
+    // Ollama uses the same message structure as OpenAI but its own endpoint.
+    let mut messages: Vec<OllamaMessage> = Vec::new();
+
+    messages.push(OllamaMessage {
+        role:    "system".to_string(),
+        content: SYSTEM_PROMPT.to_string(),
+    });
+
+    // Inject prior conversation turns
+    for turn in context.turns() {
+        messages.push(OllamaMessage {
+            role:    "user".to_string(),
+            content: format!("System context: {}\n\nUser request: {}", build_context(), turn.prompt),
+        });
+        messages.push(OllamaMessage {
+            role:    "assistant".to_string(),
+            content: format!(
+                r#"{{"commands": [{}], "explanation": "Previous command."}}"#,
+                turn.commands_summary
+                    .split(" ; ")
+                    .map(|c| format!("\"{}\"", c.replace('"', "\\\"")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        });
+    }
+
+    messages.push(OllamaMessage {
+        role:    "user".to_string(),
+        content: format!("System context: {}\n\nUser request: {}", build_context(), prompt),
+    });
+
+    let body = OllamaChatRequest {
+        model:    cfg.model.clone(),
+        messages,
+        stream:   false, // we want a single complete response, not SSE stream
+        options:  OllamaOptions { temperature: 0.2, num_predict: 512 },
+    };
+
+    // Ollama chat endpoint: POST /api/chat
+    let url = format!("{}/api/chat", cfg.ollama_url.trim_end_matches('/'));
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120)) // local models can be slow
+        .build()?;
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Could not reach Ollama at {url}: {e}\nIs Ollama running? Try: ollama serve"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text   = resp.text().unwrap_or_default();
+        return Err(format!("Ollama {status}: {text}\nMake sure the model is pulled: ollama pull {}", cfg.model).into());
+    }
+
+    let chat: OllamaChatResponse = resp.json()?;
+    parse_suggestion(&chat.message.content)
+}
+
+// =============================================================================
+//  JSON response parser
 //
-//  Parses the model's raw text output into a Suggestion struct.
+//  Shared by both backends — parses the model's text into a Suggestion.
 //
-//  WHY IS THIS A SEPARATE FUNCTION?
-//  ─────────────────────────────────
-//  Separation of concerns: suggest_commands() handles the network; this
-//  function handles parsing.  This also makes it trivially unit-testable —
-//  you can call parse_suggestion() with a hard-coded string without needing
-//  a real API key.
+//  FENCE STRIPPING
+//  ───────────────
+//  Even with an explicit "no markdown fences" rule, some models (especially
+//  smaller Ollama models) occasionally wrap output in ```json ... ```.
+//  We strip those before attempting JSON parse.  Order matters: try the
+//  longer prefix "```json" first.
 //
-//  FENCE STRIPPING — THE BELT-AND-SUSPENDERS APPROACH
-//  ────────────────────────────────────────────────────
-//  Even though the system prompt explicitly says "no markdown fences", some
-//  models — especially smaller or fine-tuned ones — occasionally wrap their
-//  output in ```json ... ``` anyway.  The trim_start_matches / trim_end_matches
-//  calls below handle this gracefully so the parser doesn't fail on a model
-//  that is "almost" following instructions.
-//
-//  We strip ```json first, then plain ```, because some models output ```json
-//  as one token and others output ``` and json separately.
+//  GENERIC VALUE PARSE
+//  ────────────────────
+//  We parse into serde_json::Value rather than a typed struct so that:
+//    a) Missing fields produce a clean error, not a panic
+//    b) We can embed the raw response in the error message for debugging
+//    c) The explanation field is truly optional (Some/None) without requiring
+//       an Option<String> in a derived struct that would need flatten logic
 // =============================================================================
 fn parse_suggestion(raw: &str) -> Result<Suggestion, Box<dyn std::error::Error>> {
-    // Step 1: strip outer whitespace (leading newlines are common).
-    let cleaned = raw.trim();
-
-    // Step 2: strip markdown code fences if the model included them.
-    // The order matters: try the longer prefix "```json" before "```".
-    let cleaned = cleaned
+    let cleaned = raw
+        .trim()
         .trim_start_matches("```json")
         .trim_start_matches("```")
         .trim_end_matches("```")
-        .trim(); // Trim again after stripping — fences may have had inner padding.
+        .trim();
 
-    // Step 3: parse as a generic JSON value first.
-    // We use serde_json::Value rather than deserialising directly into a struct
-    // because:
-    //   a) We want to gracefully handle missing fields (explanation is optional)
-    //   b) We can provide a better error message that includes the raw output
     let v: serde_json::Value = serde_json::from_str(cleaned).map_err(|e| {
-        // Include the raw content in the error so the user can debug model issues.
-        format!("Could not parse model response as JSON: {e}\nRaw response was:\n{cleaned}")
+        format!("Model returned non-JSON output: {e}\n\nRaw response:\n{cleaned}")
     })?;
 
-    // Step 4: extract the `commands` array.
-    // Chain of method calls reads as: get "commands" key → treat as array →
-    // map each element to a &str → collect to Vec<String>.
-    // `.unwrap_or_default()` returns an empty Vec if the key is missing or not
-    // an array — we handle the empty case in ui::print_suggestion.
     let commands: Vec<String> = v
         .get("commands")
         .and_then(|c| c.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|x| x.as_str())     // skip non-string elements
-                .map(|s| s.to_string())           // &str → owned String
+                .filter_map(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
                 .collect()
         })
         .unwrap_or_default();
 
-    // Step 5: extract the optional explanation string.
     let explanation = v
         .get("explanation")
         .and_then(|e| e.as_str())
-        .map(|s| s.to_string());
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     Ok(Suggestion { commands, explanation })
 }
 
 // =============================================================================
-//  intent_is_api_change
+//  Intent detection — natural language config triggers
 //
-//  Returns true if the user's prompt is asking to reconfigure the API key or
-//  switch models, rather than asking for a shell command.
+//  These regex patterns intercept prompts that mean "please reconfigure me"
+//  before they are sent to the AI.  Benefits:
+//    • Instant response (microseconds vs 1-3 s API round-trip)
+//    • Zero token cost
+//    • More reliable than asking the LLM to classify intent
 //
-//  WHY DO THIS CLIENT-SIDE INSTEAD OF SENDING IT TO THE LLM?
-//  ──────────────────────────────────────────────────────────
-//  Option A — Ask the LLM: "Is this message asking to change API settings?"
-//    • Costs a full network round-trip (~1–3 s latency, ~50 tokens)
-//    • The LLM might say "yes" for valid commands like "change directory"
-//    • The LLM might say "no" for an unusual phrasing we didn't anticipate
-//    • Adds complexity to the API call (multi-turn or function-calling)
-//
-//  Option B — Regex (what we do):
-//    • Microseconds — no network, no tokens consumed
-//    • 8 patterns cover >99% of realistic phrasings observed in testing
-//    • False positive rate is extremely low: real shell tasks rarely contain
-//      the literal words "change" + "api" or "switch" + "model" together
-//    • Transparent and auditable — the patterns are right here
-//
-//  The regex patterns are compiled fresh on each call.  Since this function
-//  runs at most once per user turn (after a 1–3 s API wait), the overhead of
-//  recompilation (~microseconds for these trivial patterns) is immeasurable.
-//  A future optimisation if this is ever in a hot loop: use `once_cell::sync::Lazy`
-//  to compile each Regex once and reuse.
+//  Patterns use `.*` between key terms to catch variations:
+//    "change my api key"  → "change.*api"  ✓
+//    "can I update the api please"  → "update.*api"  ✓
 // =============================================================================
+
+/// Returns true if the prompt is asking to reconfigure the API key or model.
 pub fn intent_is_api_change(prompt: &str) -> bool {
-    // Lowercase once to enable case-insensitive matching without the `(?i)` flag
-    // (which is slower for short patterns).
     let lower = prompt.to_lowercase();
-
-    // Pattern list — each is a simple sub-regex, not anchored.
-    // The `.*` allows arbitrary words between the key terms so we catch:
-    //   "please change my api key"  →  "change.*api"  ✓
-    //   "I want to change the api"  →  "change.*api"  ✓
-    //   "can you update the api?"   →  "update.*api"  ✓
     let patterns = [
-        r"change.*api",       // "change my api key"
-        r"update.*api",       // "update the api key"
-        r"new.*api.*key",     // "set a new api key"
-        r"set.*api.*key",     // "set api key to..."
-        r"switch.*model",     // "switch to a different model"
-        r"change.*model",     // "change the model"
-        r"update.*model",     // "update my model selection"
-        r"different.*model",  // "use a different model"
+        r"change.*api",
+        r"update.*api",
+        r"new.*api.*key",
+        r"set.*api.*key",
+        r"switch.*model",
+        r"change.*model",
+        r"update.*model",
+        r"different.*model",
+        r"change.*backend",
+        r"switch.*backend",
+        r"use.*ollama",
+        r"use.*openrouter",
     ];
-
-    for pat in &patterns {
-        // Regex::new() only fails if the pattern is invalid — ours are all
-        // hard-coded literals, so unwrap() would be safe here.  We use if let
-        // Ok() to be maximally defensive.
-        if let Ok(re) = Regex::new(pat) {
-            if re.is_match(&lower) {
-                return true;
-            }
-        }
-    }
-
-    false
+    patterns.iter().any(|p| {
+        Regex::new(p).map(|re| re.is_match(&lower)).unwrap_or(false)
+    })
 }
 
 // =============================================================================
-//  build_context
+//  System context builder
 //
-//  Builds a compact context string prepended to each user prompt.
-//  The string is intentionally terse — every byte counts toward the token
-//  budget, and the model only needs the key facts.
+//  Injects runtime environment facts into every prompt.
+//  These 4 fields have the highest impact on command correctness:
 //
-//  Fields included and why:
-//    OS   — determines available commands (brew vs apt, open vs xdg-open, etc.)
-//    ARCH — distinguishes arm64 (Apple Silicon) from x86_64 for binary downloads
-//    CWD  — lets the model produce relative paths and context-aware suggestions
-//    SHELL— helps the model use shell-specific features ($BASH_VERSION check,
-//           zsh-specific builtins, etc.)
-//
-//  Fields intentionally NOT included:
-//    Username / $HOME — privacy; rarely needed for command generation
-//    Installed packages — would require shelling out (slow) and is unreliable
-//    $PATH            — too long, model doesn't need it to generate commands
+//    OS=macos   → use `open`, `brew`, `pbcopy`; avoid `apt`, `xdg-open`
+//    OS=windows → use `cmd.exe` syntax, backslash paths, `start` instead of `open`
+//    ARCH=aarch64 → Apple Silicon; some binary installs differ from x86_64
+//    CWD=...    → relative paths in suggestions match the actual working dir
+//    SHELL=...  → zsh-specific syntax vs bash vs fish vs PowerShell
 // =============================================================================
-fn build_context() -> String {
-    // std::env::consts::OS returns lowercase OS name: "macos", "linux", "windows"
+/// Build a rich context string injected into every AI prompt.
+///
+/// v2.0.0: uses shell::ShellKind::detect() for precise shell identification
+/// rather than a raw $SHELL env var read.  This correctly distinguishes
+/// PowerShell 5 from PowerShell 7, Git Bash from native bash, etc.
+pub fn build_context() -> String {
     let os   = std::env::consts::OS;
-    // std::env::consts::ARCH: "x86_64", "aarch64", "arm", etc.
     let arch = std::env::consts::ARCH;
 
-    // current_dir() can fail if the process's working directory has been deleted
-    // (rare but possible on Linux) — fall back to "unknown" rather than panic.
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
-    // SHELL is set by the login shell on Unix systems.
-    // It contains the full path, e.g. /bin/zsh or /usr/bin/fish.
-    // Fallback to "sh" (lowest common denominator) on Windows or if unset.
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    // Detect shell precisely — see shell.rs for the full detection matrix
+    let shell = ShellKind::detect();
+    let shell_label = shell.label();
 
-    format!("OS={os} ARCH={arch} CWD={cwd} SHELL={shell}")
+    // Include a posix_compat hint so the AI knows whether to use POSIX syntax,
+    // PowerShell syntax, or cmd.exe syntax without having to infer it.
+    let syntax_hint = if shell.is_powershell() {
+        "syntax=powershell"
+    } else if matches!(shell, ShellKind::Cmd) {
+        "syntax=cmd"
+    } else {
+        "syntax=posix"
+    };
+
+    format!("OS={os} ARCH={arch} CWD={cwd} SHELL={shell_label} {syntax_hint}")
 }

@@ -4,41 +4,36 @@
 //
 //  OVERVIEW
 //  ────────
-//  yo-rust stores exactly two pieces of user configuration:
-//    • api_key — the OpenRouter secret key (sk-or-…)
-//    • model   — the model slug (e.g. "openai/gpt-4o-mini")
-//
-//  These are persisted as a plain JSON file at:
+//  yo-rust stores all user preferences in a single JSON file:
 //    macOS  → ~/Library/Application Support/yo-rust/config.json
 //    Linux  → ~/.config/yo-rust/config.json  (or $XDG_CONFIG_HOME)
 //    Windows→ %APPDATA%\yo-rust\config.json
 //
-//  The `dirs` crate resolves the correct platform path automatically.
+//  v2.0.0 adds four new configuration fields:
+//    backend        — "openrouter" (default) or "ollama" (local)
+//    ollama_url     — base URL for the Ollama API (default: http://localhost:11434)
+//    history_enabled— append confirmed commands to shell history (default: true)
+//    context_size   — number of recent turns to include as follow-up context (default: 5)
 //
-//  WHY JSON, NOT TOML/YAML/INI?
-//  ──────────────────────────────
-//  • serde_json is already a dependency (used in ai.rs) — zero extra weight
-//  • JSON is universally understood and manually editable by any user
-//  • The config is trivially simple (2 string fields) — TOML's advantages
-//    (comments, typed arrays) don't apply here
-//  • serde_json::to_string_pretty() produces readable output automatically:
-//    {
-//      "api_key": "sk-or-...",
-//      "model": "openai/gpt-4o-mini"
-//    }
+//  All new fields use #[serde(default)] so existing v1.x config files are
+//  read without error — missing fields fall back to sensible defaults.
+//
+//  BACKEND SELECTION
+//  ─────────────────
+//  "openrouter" — sends requests to https://openrouter.ai/api/v1/chat/completions.
+//    Requires an API key.  Supports any model on OpenRouter's catalogue.
+//
+//  "ollama"    — sends requests to http://localhost:11434 (or ollama_url).
+//    Requires a running Ollama instance (https://ollama.ai).
+//    No API key required.  Model must be pulled locally (ollama pull <model>).
+//    Ideal for air-gapped environments or privacy-sensitive workloads.
 //
 //  SECURITY NOTE
 //  ─────────────
-//  The API key is stored in plaintext in the config file.  This is a deliberate
-//  trade-off: most developer tools (git, npm, cargo, ~/.ssh/config) store
-//  credentials in plaintext config files.  The file is only readable by the
-//  current user (default filesystem permissions on macOS/Linux are 0o644 for
-//  files in ~/.config).  A future enhancement could use the system keychain
-//  (Keychain on macOS, Secret Service on Linux) — but this adds significant
-//  complexity and platform-specific dependencies.
-//
-//  The key is ONLY sent over HTTPS to api.openrouter.ai — never logged,
-//  printed (except partially in error messages), or written to stdout.
+//  The API key is stored in plaintext.  This is standard practice for
+//  developer CLI tools (~/.ssh/config, ~/.npmrc, ~/.cargo/credentials).
+//  The file permissions default to 0o600 on Unix (user-readable only).
+//  The key is only transmitted over HTTPS to api.openrouter.ai.
 // =============================================================================
 
 use colored::Colorize;
@@ -49,155 +44,203 @@ use std::path::PathBuf;
 
 // =============================================================================
 //  Config struct
-//
-//  Derives:
-//    Debug       — allows `{:?}` formatting for troubleshooting (api_key will
-//                  appear in debug output — be careful not to log this)
-//    Default     — generates Config { api_key: "".into(), model: "".into() }
-//                  used when no config file exists yet (first run detection)
-//    Serialize   — enables serde_json::to_string_pretty(cfg)
-//    Deserialize — enables serde_json::from_str::<Config>(json)
-//
-//  #[serde(default)] on each field means that if the JSON on disk is missing
-//  that key (e.g. an older config file before "model" was added), serde uses
-//  the Default impl (empty string) instead of erroring.  This makes the
-//  config format forward-compatible: new fields added in future versions won't
-//  break existing config files.
 // =============================================================================
-#[derive(Debug, Default, Serialize, Deserialize)]
+
+/// All persistent user preferences for yo-rust.
+///
+/// Every field has a `#[serde(default)]` so that deserialising an older config
+/// file (with fewer fields) never panics — missing fields use the Default impl.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
-    /// OpenRouter API key.  Format: "sk-or-v1-<hex>".
-    /// Empty string = not yet configured (first-run sentinel).
+    // ── v1.x fields ──────────────────────────────────────────────────────────
+
+    /// OpenRouter API key.  Empty = not yet configured (first-run sentinel).
     #[serde(default)]
     pub api_key: String,
 
-    /// OpenRouter model slug.  Format: "provider/model-name[:variant]".
-    /// Examples: "openai/gpt-4o-mini", "anthropic/claude-3-haiku",
-    ///           "meta-llama/llama-3.3-70b-instruct:free"
-    /// Empty string = use the default set in interactive_setup().
-    #[serde(default)]
+    /// Model slug for OpenRouter, e.g. "openai/gpt-4o-mini".
+    /// When backend == "ollama", this is the Ollama model name, e.g. "llama3.2".
+    #[serde(default = "default_model")]
     pub model: String,
+
+    // ── v2.0.0 fields ────────────────────────────────────────────────────────
+
+    /// AI backend: "openrouter" (default) or "ollama".
+    /// Determines which API endpoint is used and whether an API key is required.
+    #[serde(default = "default_backend")]
+    pub backend: String,
+
+    /// Base URL for the Ollama API server.
+    /// Only used when backend == "ollama".
+    /// Change if Ollama is running on a remote host or non-default port.
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
+
+    /// Whether to append confirmed commands to the shell history file.
+    /// true = append to ~/.zsh_history / ~/.bash_history after each confirmed run.
+    /// false = no history appending (equivalent to --no-history flag).
+    /// Default: true.
+    #[serde(default = "default_true")]
+    pub history_enabled: bool,
+
+    /// Number of recent prompt/command pairs to include as context in each
+    /// new AI request, enabling follow-up prompts ("now do the same for X").
+    /// 0 = disabled.  Default: 5.
+    #[serde(default = "default_context_size")]
+    pub context_size: usize,
+}
+
+// ── Default value functions (required for #[serde(default = "fn_name")] ) ────
+// These must be free functions (not closures) — serde's limitation.
+
+fn default_model()        -> String { "openai/gpt-4o-mini".to_string() }
+fn default_backend()      -> String { "openrouter".to_string() }
+fn default_ollama_url()   -> String { "http://localhost:11434".to_string() }
+fn default_true()         -> bool   { true }
+fn default_context_size() -> usize  { 5 }
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            api_key:         String::new(),
+            model:           default_model(),
+            backend:         default_backend(),
+            ollama_url:      default_ollama_url(),
+            history_enabled: default_true(),
+            context_size:    default_context_size(),
+        }
+    }
 }
 
 // =============================================================================
-//  config_path
-//
-//  Returns the absolute path to the config file.
-//
-//  We call this function from load() and save() rather than computing it once
-//  at startup because:
-//   1. The path is trivially cheap to compute (a few string concatenations)
-//   2. It avoids a global or lazy static — keeps the module stateless
-//   3. In theory $XDG_CONFIG_HOME could change between calls (unlikely but
-//      this keeps the code correct by construction)
-//
-//  dirs::config_dir() follows XDG on Linux, uses the platform default on
-//  macOS and Windows.  It returns None only in unusual circumstances (no HOME
-//  set, missing Windows registry key) — we fall back to "." in that case,
-//  which puts the config in the current directory.  Not ideal, but recoverable.
+//  Path resolution
 // =============================================================================
+
+/// Returns the absolute path to the config JSON file.
+///
+/// We recompute this on every call (rather than caching it) because:
+///   1. The path is cheap to compute (a few string joins).
+///   2. It keeps the module stateless — no global or lazy_static needed.
+///   3. XDG_CONFIG_HOME could theoretically change between calls.
 fn config_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    // Join appends path components in a platform-safe way (/ on Unix, \ on Windows).
     base.join("yo-rust").join("config.json")
 }
 
 // =============================================================================
-//  load
-//
-//  Reads and deserialises the config file.  Returns Config::default() if the
-//  file doesn't exist yet (first-run scenario).
-//
-//  Error cases that propagate up to main():
-//   • File exists but is not valid UTF-8
-//   • File exists but is not valid JSON
-//   • File exists but JSON has unexpected types for known fields
-//
-//  We do NOT silently ignore a corrupted config — the user should know if their
-//  config is broken so they can delete it and start fresh.
+//  Load
 // =============================================================================
+
+/// Read and deserialise the config file.
+///
+/// Returns `Config::default()` if the file does not exist (first-run).
+/// Propagates errors for corrupted/unreadable files — the caller exits.
 pub fn load() -> Result<Config, Box<dyn std::error::Error>> {
     let path = config_path();
-
-    // First-run: the file simply doesn't exist yet.
-    // Return an empty default rather than an error — the caller detects
-    // cfg.api_key.is_empty() and triggers interactive_setup().
     if !path.exists() {
         return Ok(Config::default());
     }
-
-    // fs::read_to_string reads the file into a heap-allocated String.
-    // For a ~100-byte config file this is effectively free.
     let raw = fs::read_to_string(&path)?;
-
-    // serde_json::from_str performs JSON parsing and type coercion in one pass.
-    // The #[serde(default)] attributes on Config fields handle missing keys.
     let cfg: Config = serde_json::from_str(&raw)?;
     Ok(cfg)
 }
 
 // =============================================================================
-//  save
-//
-//  Serialises and writes the config to disk, creating parent directories
-//  if they don't exist yet.
-//
-//  WHY NOT USE AN ATOMIC WRITE (TEMP FILE + RENAME)?
-//  ──────────────────────────────────────────────────
-//  Atomic writes (write to tmpfile → fsync → rename) prevent partial writes
-//  from corrupting the config file.  For a ~100-byte file written once per
-//  session, the window for corruption (SIGKILL during write) is nanoseconds.
-//  If it does happen, the user simply re-enters their API key.  The added
-//  complexity of temp-file + rename is not warranted here.
-//
-//  If this were a database or a large file, atomic writes would be essential.
+//  Save
 // =============================================================================
+
+/// Serialise and write the config to disk.
+///
+/// Creates parent directories if they don't exist yet.
+/// On failure, the caller logs a warning but the session continues.
 pub fn save(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let path = config_path();
-
-    // Create the yo-rust config directory if it doesn't exist.
-    // create_dir_all is idempotent — safe to call even if the directory exists.
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-
-    // Produce pretty-printed JSON (2-space indentation) so the file is
-    // human-readable if the user opens it in a text editor.
     let json = serde_json::to_string_pretty(cfg)?;
-
-    // fs::write creates or truncates the file and writes all bytes atomically
-    // at the OS level (a single write() syscall for small content on most systems).
     fs::write(&path, json)?;
     Ok(())
 }
 
 // =============================================================================
-//  interactive_setup
-//
-//  Walks the user through entering an API key and selecting a model.
-//  Mutates `cfg` in place — the caller is responsible for calling save() after.
-//
-//  WHY MUTATE IN PLACE RATHER THAN RETURN A NEW CONFIG?
-//  ──────────────────────────────────────────────────────
-//  The caller (main.rs) already owns `cfg` and needs to keep using it after
-//  setup.  Mutating in place avoids an unnecessary clone and keeps the borrow
-//  checker happy without lifetime gymnastics.
-//
-//  The API key loop runs until a non-empty string is entered.  We don't
-//  validate the key format (sk-or-…) because:
-//   1. OpenRouter may change key formats in future
-//   2. The user will discover immediately on the next prompt if it's wrong
-//   3. Validation would require a test API call — adds 1–3 s to setup
+//  Interactive setup
 // =============================================================================
+
+/// Walk the user through the full configuration wizard.
+///
+/// Mutates `cfg` in-place.  The caller is responsible for calling `save()`
+/// after this returns.
+///
+/// v2.0.0 adds:
+///   - Backend selection (OpenRouter vs Ollama)
+///   - Ollama URL prompt (only when Ollama is selected)
+///   - History preference toggle
+///   - Context size preference
 pub fn interactive_setup(cfg: &mut Config) {
     println!();
-    println!("{}", "  ╔══════════════════════════════════════════════╗".cyan());
-    println!("{}", "  ║          OpenRouter  Configuration           ║".cyan().bold());
-    println!("{}", "  ╚══════════════════════════════════════════════╝".cyan());
+    println!("{}", "  ╔════════════════════════════════════════════════╗".cyan());
+    println!("{}", "  ║            yo-rust Configuration               ║".cyan().bold());
+    println!("{}", "  ╚════════════════════════════════════════════════╝".cyan());
+    println!();
+
+    // ── 1. Backend selection ──────────────────────────────────────────────────
+    println!("  {}", "AI Backend:".white().bold());
+    println!("  {}", "  1) OpenRouter  (cloud — GPT-4o, Claude, Llama, etc.)".dimmed());
+    println!("  {}", "  2) Ollama      (local — private, offline, no API key needed)".dimmed());
+    println!();
+    print!("  {}  ", "Backend [1] ›".yellow().bold());
+    io::stdout().flush().unwrap_or(());
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap_or(0);
+    match input.trim() {
+        "2" => {
+            cfg.backend = "ollama".to_string();
+            setup_ollama(cfg);
+        }
+        _ => {
+            cfg.backend = "openrouter".to_string();
+            setup_openrouter(cfg);
+        }
+    }
+
+    // ── 2. Shell history preference ────────────────────────────────────────
+    println!();
+    println!("  {}", "Shell history:".white().bold());
+    println!("  {}", "  Append confirmed commands to ~/.zsh_history / ~/.bash_history?".dimmed());
+    println!("  {}", "  This makes them available via ↑ in your terminal.".dimmed());
+    println!();
+    print!("  {}  ", "Enable history appending? [Y/n] ›".yellow().bold());
+    io::stdout().flush().unwrap_or(());
+
+    input.clear();
+    io::stdin().read_line(&mut input).unwrap_or(0);
+    cfg.history_enabled = !matches!(input.trim().to_lowercase().as_str(), "n" | "no");
+
+    // ── 3. Context size preference ─────────────────────────────────────────
+    println!();
+    println!("  {}", "Follow-up context:".white().bold());
+    println!("  {}", "  How many recent commands to remember for follow-up prompts?".dimmed());
+    println!("  {}", "  (0 = disabled, default = 5, max = 20)".dimmed());
+    println!();
+    print!("  {}  ", "Context size [5] ›".yellow().bold());
+    io::stdout().flush().unwrap_or(());
+
+    input.clear();
+    io::stdin().read_line(&mut input).unwrap_or(0);
+    cfg.context_size = input.trim().parse::<usize>().unwrap_or(5).min(20);
+
+    println!();
+    println!("{}", "  ✔  Configuration saved.".green().bold());
+}
+
+/// Sub-wizard for OpenRouter setup.
+fn setup_openrouter(cfg: &mut Config) {
     println!();
     println!(
         "  {}",
-        "Get your free API key at:  https://openrouter.ai/keys".dimmed()
+        "Get your free API key at: https://openrouter.ai/keys".dimmed()
     );
     println!(
         "  {}",
@@ -205,61 +248,31 @@ pub fn interactive_setup(cfg: &mut Config) {
     );
     println!();
 
-    // ── API key input loop ────────────────────────────────────────────────────
-    // We loop until the user enters a non-empty string.
-    // io::stdout().flush() is necessary before print!() (without newline)
-    // because stdout is line-buffered by default — without flush the prompt
-    // would not appear until a newline was written.
+    // API key loop — retry until non-empty
     loop {
         print!("  {}  ", "OpenRouter API key ›".yellow().bold());
-        io::stdout().flush().unwrap_or(()); // Best-effort — ignore flush errors
-
+        io::stdout().flush().unwrap_or(());
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap_or(0);
         let key = input.trim().to_string();
-
         if key.is_empty() {
-            println!("{}", "  ✗  API key cannot be empty. Please paste your key.".red());
+            println!("{}", "  ✗  API key cannot be empty.".red());
             continue;
         }
         cfg.api_key = key;
         break;
     }
 
-    // ── Model selection ───────────────────────────────────────────────────────
-    // We present a curated list of well-known models rather than asking the user
-    // to type a slug from memory.  Numbers 1-5 map to preset slugs; anything
-    // else is treated as a custom slug (advanced users).
-    //
-    // The list is intentionally short — a long list causes "choice paralysis".
-    // Users who want other models can type the slug directly.
+    // Model selection
     println!();
     println!("  {}", "Select a model:".white().bold());
-    println!(
-        "  {}",
-        "  1) openai/gpt-4o-mini              ★ recommended — fast, cheap, reliable".dimmed()
-    );
-    println!(
-        "  {}",
-        "  2) openai/gpt-4o                   powerful, best for complex tasks".dimmed()
-    );
-    println!(
-        "  {}",
-        "  3) anthropic/claude-3.5-sonnet     best reasoning".dimmed()
-    );
-    println!(
-        "  {}",
-        "  4) anthropic/claude-3-haiku        very fast, low cost".dimmed()
-    );
-    println!(
-        "  {}",
-        "  5) meta-llama/llama-3.3-70b-instruct:free   free tier (may hit rate limits)".dimmed()
-    );
-    println!(
-        "  {}",
-        "  Or type any OpenRouter model slug (e.g. google/gemini-flash-1.5).".dimmed()
-    );
-    println!("  {}", "  Leave blank to use option 1 — gpt-4o-mini (recommended).".dimmed());
+    println!("  {}", "  1) openai/gpt-4o-mini              ★ recommended — fast, reliable".dimmed());
+    println!("  {}", "  2) openai/gpt-4o                   most powerful".dimmed());
+    println!("  {}", "  3) anthropic/claude-3.5-sonnet     best reasoning".dimmed());
+    println!("  {}", "  4) anthropic/claude-3-haiku        very fast, low cost".dimmed());
+    println!("  {}", "  5) meta-llama/llama-3.3-70b-instruct:free   free tier".dimmed());
+    println!("  {}", "  Or type any OpenRouter model slug directly.".dimmed());
+    println!("  {}", "  Leave blank for gpt-4o-mini (recommended).".dimmed());
     println!();
 
     print!("  {}  ", "Model [1] ›".yellow().bold());
@@ -267,29 +280,74 @@ pub fn interactive_setup(cfg: &mut Config) {
 
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap_or(0);
-    let choice = input.trim().to_string();
-
-    // Map numeric shortcuts to full slugs; anything else is passed through as-is.
-    // Default (blank / "1") is gpt-4o-mini: fast, cheap, and reliably follows
-    // the JSON envelope schema. The free Llama tier can hit rate limits quickly
-    // and may not follow structured output instructions as consistently.
-    cfg.model = match choice.as_str() {
+    cfg.model = match input.trim() {
         "" | "1" => "openai/gpt-4o-mini".to_string(),
         "2"      => "openai/gpt-4o".to_string(),
         "3"      => "anthropic/claude-3.5-sonnet".to_string(),
         "4"      => "anthropic/claude-3-haiku".to_string(),
         "5"      => "meta-llama/llama-3.3-70b-instruct:free".to_string(),
-        custom   => custom.to_string(), // Advanced user — trust the input
+        custom   => custom.to_string(),
     };
 
     println!();
     println!(
-        "  {}  using model: {}",
-        "✔  Saved →".green().bold(),
+        "  {}  model: {}",
+        "✔  OpenRouter configured →".green().bold(),
         cfg.model.cyan()
     );
+}
+
+/// Sub-wizard for Ollama setup.
+fn setup_ollama(cfg: &mut Config) {
+    println!();
+    println!("  {}", "Ollama — local AI backend".white().bold());
+    println!("  {}", "  Install Ollama: https://ollama.ai".dimmed());
+    println!("  {}", "  Pull a model:   ollama pull llama3.2".dimmed());
+    println!();
+
+    // Ollama base URL
+    print!("  {}  ", "Ollama URL [http://localhost:11434] ›".yellow().bold());
+    io::stdout().flush().unwrap_or(());
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap_or(0);
+    let url = input.trim().to_string();
+    cfg.ollama_url = if url.is_empty() {
+        "http://localhost:11434".to_string()
+    } else {
+        url
+    };
+
+    // Model name
+    println!();
+    println!("  {}", "Common Ollama models (must be pulled first):".white().bold());
+    println!("  {}", "  1) llama3.2          (recommended general-purpose)".dimmed());
+    println!("  {}", "  2) llama3.1          (older, widely available)".dimmed());
+    println!("  {}", "  3) mistral           (fast, good at code/commands)".dimmed());
+    println!("  {}", "  4) codellama         (code-optimised)".dimmed());
+    println!("  {}", "  Or type any model name you have pulled locally.".dimmed());
+    println!();
+
+    print!("  {}  ", "Model [1] ›".yellow().bold());
+    io::stdout().flush().unwrap_or(());
+
+    input.clear();
+    io::stdin().read_line(&mut input).unwrap_or(0);
+    cfg.model = match input.trim() {
+        "" | "1" => "llama3.2".to_string(),
+        "2"      => "llama3.1".to_string(),
+        "3"      => "mistral".to_string(),
+        "4"      => "codellama".to_string(),
+        custom   => custom.to_string(),
+    };
+
+    // Clear the API key when switching to Ollama — it's not needed.
+    // We keep any existing key in case the user switches back.
+
+    println!();
     println!(
-        "  {}",
-        "  Config written to ~/.config/yo-rust/config.json".dimmed()
+        "  {}  model: {}  url: {}",
+        "✔  Ollama configured →".green().bold(),
+        cfg.model.cyan(),
+        cfg.ollama_url.dimmed()
     );
 }

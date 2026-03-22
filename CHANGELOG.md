@@ -1,133 +1,184 @@
 # 📝 Changelog — Yo, Rust!
 
-All notable changes to this project will be documented in this file.
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
-Versioning follows [Semantic Versioning](https://semver.org/).
+Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: [SemVer](https://semver.org/)
+
+---
+
+## [2.0.0] — 2026-03-22
+
+This is a major release.  All v1.x config files are forward-compatible — new fields
+default to sensible values when missing.
+
+### ✨ New Features
+
+#### 🏠 Ollama backend — local, private, offline
+- New backend option: `ollama`.  Routes requests to a local Ollama instance
+  (`http://localhost:11434` by default, configurable).
+- No API key required.  No outbound network traffic.  Complete privacy.
+- Supports any Ollama model: `llama3.2`, `mistral`, `codellama`, `qwen2.5-coder`, etc.
+- Full setup wizard: backend selection, Ollama URL, model name.
+- Natural-language triggers: "use ollama", "use openrouter", "change backend" all
+  detected client-side before any API call.
+- 120-second timeout (vs 60 for OpenRouter) — local inference can be slower.
+- Error messages include actionable hints: "Is Ollama running? Try: ollama serve"
+
+#### 🔁 Multi-turn conversation context
+- New module `context.rs`: rolling window of the last N confirmed prompt/command pairs.
+- Default window size: 5 turns (configurable in setup or `config.json`).
+- Prior turns are injected as `user`/`assistant` message pairs before the current
+  prompt — the AI can resolve pronouns ("them", "it") and relative references
+  ("now for staging", "same but without -r").
+- REPL prompt shows turn count: `yo [+3] ›` so users know context is active.
+- `!context` / `!ctx` shortcut: inspect the full context window at any time.
+- `!clear` shortcut: reset context for a fresh session.
+- `--no-context` CLI flag: disable for a single session without changing config.
+- Context is in-memory only — not persisted to disk (session-specific, privacy).
+
+#### 📜 Shell history integration
+- New module `history.rs`: appends confirmed commands to the shell history file.
+- Format per shell:
+  - **zsh**: `: <unix_timestamp>:0;<command>` (EXTENDED_HISTORY format)
+  - **bash**: `<command>` one per line (plain format)
+  - **fish**: `- cmd: <command>\n  when: <timestamp>` (YAML-like)
+- Respects `$ZDOTDIR`, `$HISTFILE`, and XDG data directories.
+- History appending enabled by default; can be disabled via `!api` or `--no-history`.
+- Non-fatal: a failed write logs a warning but never interrupts the session.
+
+#### 🧪 Dry-run mode
+- `--dry` / `-d` CLI flag: suggest commands without ever executing them.
+- Command box rendered in **yellow** with `[dry-run — not executed]` label.
+- AI is still called normally — useful for previewing destructive operations.
+- Context is updated in dry-run mode so follow-up prompts still work.
+- Shell history is not appended in dry-run mode.
+- Banner shows `DRY-RUN MODE` badge when active.
+
+#### 🪝 Post-execution feedback loop
+- After commands run, yo-rust asks "Did that work? [Y/n]".
+- **Y / Enter** → record turn in context, append to shell history, continue.
+- **N** → ask "What went wrong?" → build a refinement prompt including the original
+  commands and the failure description → call AI → show refined suggestion → confirm again.
+- Prompt wording adapts: if a command exited non-zero, the default shifts to N
+  (explicit confirmation required that it worked anyway).
+- Ctrl-D at the feedback prompt = "yes, done" (safe default, clean exit path).
+
+#### 🐚 Precise shell detection — new module `shell.rs`
+- Detects the full shell matrix: zsh, bash, fish, sh/dash, PowerShell 5, PowerShell 7,
+  cmd.exe, Git Bash (MSYS2 on Windows).
+- Detection uses: `$SHELL` (Unix), `$PSModulePath` (PowerShell presence + version),
+  `$MSYSTEM` (Git Bash), `$COMSPEC` (cmd.exe fallback).
+- Context string now includes `SHELL=<kind>` and `syntax=<family>`:
+  - `syntax=posix` — POSIX sh, zsh, bash, fish, sh, Git Bash
+  - `syntax=powershell` — PS5 or PS7 (model avoids `&&` for PS5, allows it for PS7)
+  - `syntax=cmd` — cmd.exe (model uses `&` chaining, `%VAR%` expansion)
+- System prompt updated with explicit syntax rules per family.
+- Execution dispatched via `shell::run_in_shell()` — correct program and args per shell:
+  - POSIX: `sh -c "<cmd>"`
+  - PowerShell 5: `powershell -NoProfile -Command "<cmd>"`
+  - PowerShell 7: `pwsh -NoProfile -Command "<cmd>"`
+  - cmd.exe: `cmd /C "<cmd>"`
+  - fish: `fish -c "<cmd>"`
+
+#### 🪟 Windows support
+- Command execution uses detected shell (PS5/PS7/cmd.exe/Git Bash) instead of
+  a hardcoded `#[cfg(target_os = "windows")]` / `#[cfg(not)]` branch.
+- Config path resolves to `%APPDATA%\yo-rust\config.json` via `dirs` crate.
+- Context string falls back to `$COMSPEC` if `$SHELL` is not set (Windows native).
+- Build guide added to README and INSTALL.md: winget + cargo, PowerShell installer path.
+
+#### 🗂️ New shortcuts
+- `!context` / `!ctx` — print the full conversation context (prompts + commands).
+- `!clear` — reset context window to empty.
+
+#### 📟 New CLI flags (`cli.rs` with clap)
+- `--dry` / `-d` — dry-run mode for the session
+- `--no-history` — disable history appending for the session
+- `--no-context` — disable multi-turn context for the session
+- `--help` / `--version` — standard clap output
+
+### 🔧 Improvements
+
+- **Config struct** extended with: `backend`, `ollama_url`, `history_enabled`,
+  `context_size`.  All use `#[serde(default)]` — v1.x configs load without error.
+- **Setup wizard** restructured: backend selection first, then OpenRouter or Ollama
+  sub-wizard, then history preference, then context size.
+- **Intro display** shows active backend, dry-run status, history and context state.
+- **Help screen** shows session status (backend, dry-run, history, context size)
+  and documents all new shortcuts and flags.
+- **REPL prompt** shows context turn count: `yo [+3] ›`.
+- **Ollama error messages** include model pull hint on 404.
+- **HTTP client** now has explicit timeouts: 60 s (OpenRouter), 120 s (Ollama).
+
+### 📦 New modules
+
+| Module | Purpose |
+|---|---|
+| `shell.rs` | Shell kind detection and cross-platform execution dispatch |
+| `context.rs` | Rolling conversation context window |
+| `history.rs` | Shell history file appending (zsh/bash/fish) |
+| `cli.rs` | clap-based CLI argument parsing |
+
+### 📚 Documentation
+
+- README fully rewritten for v2.0.0: Ollama section, dry-run section, Windows
+  install guide, shell detection table, multi-turn context explanation, updated
+  engineering notes.
+- INSTALL.md: Windows installation options, updated troubleshooting table.
+- CHANGELOG.md: this entry.
 
 ---
 
 ## [1.1.3] — 2026-03-22
 
 ### 🐛 Fixed
+- **Critical: uninstall.sh prompt always fired "Cancelled"** when run via `curl | bash`.
+  Root cause: `read -r reply` read from the pipe not the terminal.
+  Fix: all prompts use `read -r reply </dev/tty`.
+- Prompt shows `[Y/N]` (uppercase both) for main confirm; `[y/N]` only for optional steps.
+- Removed Unicode characters from all shell scripts — pure ASCII for portability.
+- `echo -e` replaced with `printf` throughout.
+- `trap 'rm -rf "$TMP_DIR"' EXIT` added to `yo.sh` and `update.sh`.
 
-- **Critical: uninstall.sh prompt was always treated as "No"** when run via
-  `curl | bash`. Root cause: `read -r reply` was reading from the pipe (the
-  script content) rather than the terminal, getting an empty string immediately,
-  which never matched `^[Yy]$`. Fix: all interactive prompts now read from
-  `/dev/tty` directly (`read -r reply </dev/tty`), which is the actual terminal
-  regardless of how stdin is connected.
-- **Prompt label corrected** -- confirmation prompts now show `[Y/N]` (both
-  uppercase) as the primary confirm, or `[y/N]` (uppercase N = default no)
-  for destructive optional steps like config deletion. Previous code showed
-  `[y/N]` for the main confirmation, making it look like No was the default.
-- **Unicode encoding issues removed** -- all three scripts were written with
-  Unicode box-drawing and arrow characters (`─`, `▶`, `✔`, etc.) embedded in
-  bash `echo` statements. These can corrupt on some terminals and editors.
-  All scripts now use pure ASCII (`+`, `-`, `|`, `[ok]`, `[!!]`) for maximum
-  portability.
-- **`printf` replaces `echo -e`** throughout all scripts -- `echo -e` behaviour
-  is not guaranteed across shells (undefined in POSIX). `printf` is portable.
-- **`trap` added** to `yo.sh` and `update.sh` -- temp directory is now cleaned
-  up on any exit (success or failure), preventing leftover build directories.
-- **Version detection improved** in `update.sh` -- added `|| true` guard so
-  the script never exits with an error if `strings` or `grep` finds nothing.
-- **INSTALL.md rewritten** -- added `/dev/tty` note under uninstall, added
-  troubleshooting row for the prompt issue, cleaned all markdown.
+---
 
-### ✨ New (carried from v1.1.2)
+## [1.1.2] — 2026-03-22
 
+### ✨ New
+- `update.sh` — dedicated update script with version detection and early-exit.
+- `uninstall.sh` — full removal with prompts for config and alias cleanup.
+- `yo.sh` improved — detects existing install, prints update/uninstall one-liners.
+- `INSTALL.md` rewritten — single reference for all operations.
 
-- **`update.sh`** — dedicated update script (`curl -fsSL .../update.sh | bash`).
-  Detects installed version, fetches latest from GitHub, skips if already current,
-  replaces binary in-place. Config and aliases are never modified.
-- **`uninstall.sh`** — clean full-removal script. Finds the binary wherever it was
-  installed, asks before deleting config (preserves API key by default), removes
-  the `hi`/`hello` alias block from `~/.zshrc` and `~/.bashrc` using a safe
-  temp-file edit. Prints reinstall command at the end.
-- **`yo.sh` improved** — now detects an existing install and shows the current
-  version before building. Replaces binary at the original install location.
-  Prints update and uninstall one-liners at the end of every install.
-- **`INSTALL.md` rewritten** — single reference for install, update, uninstall,
-  manual steps, troubleshooting table, and platform support matrix.
-- **README** — update and uninstall one-liners added under the install section;
-  `update.sh` and `uninstall.sh` added to the code structure table.
+---
 
-### 🐛 Fix (carried from v1.1.1)
+## [1.1.1] — 2026-03-22
 
-- **Default model changed back to `openai/gpt-4o-mini`** — the free Llama 3.3 70B tier
-  hits OpenRouter rate limits quickly under normal usage and does not follow the
-  structured JSON schema as reliably as GPT-4o-mini. Since yo-rust is designed for
-  users with a paid OpenRouter account, `gpt-4o-mini` is the better default: fast,
-  cheap (~$0.15/1M tokens), and consistently produces correct shell commands.
-- **Model selection menu reordered** — `gpt-4o-mini` is now option 1 (default),
-  followed by `gpt-4o`, `claude-3.5-sonnet`, `claude-3-haiku`, and `llama-3.3-70b-instruct:free`.
-  Free Llama moved to position 5 with a note about rate limits.
-- **Version bumped** to `1.1.1` across all files: `Cargo.toml`, `src/ui.rs` (`VERSION` const),
-  `README.md` (badge + two ASCII banner blocks + changelog heading), `CHANGELOG.md`.
+### 🐛 Fixed
+- Default model reverted to `openai/gpt-4o-mini` (free Llama tier hits rate limits).
+- Model menu reordered; free Llama moved to position 5 with rate-limit note.
 
 ---
 
 ## [1.1.0] — 2026-03-22
 
-### 📚 Documentation & Code Quality
-
-- **Deep source annotations** across all four modules (`main.rs`, `ai.rs`, `config.rs`, `ui.rs`)
-  — every function, type, and design decision is now documented with the *why*, not just the *what*.
-  Comments explain tradeoffs (blocking vs async, `sh -c` vs direct exec, regex vs LLM intent),
-  performance characteristics, and future improvement paths.
-- **`Cargo.toml` fully annotated** — every dependency includes a comment explaining what it does,
-  why it was chosen over alternatives, and which features are enabled and why.
-
-### 🎨 UI & UX
-
-- **VERSION const** introduced in `ui.rs` — the banner version string is now a single source of
-  truth. Changing the version only requires updating `Cargo.toml` and `VERSION` in `ui.rs`.
-- **Help screen expanded** — shows macOS and Linux config paths separately, documents ↑/↓ history
-  navigation, adds 2 new prompt examples (watch log, count code lines).
-- **Suggestion box** minimum width increased (46 chars) and right-padding improved for better
-  visual alignment across commands of varying length.
-
-### 🧠 AI & Prompting
-
-- **System prompt tightened** — Rule 4 now explicitly says "POSIX sh-compatible" and
-  "avoid bash-isms" to reduce shell-specific syntax that breaks on `/bin/sh`.
-- **Default model changed** to `meta-llama/llama-3.3-70b-instruct:free` — free-tier, no credit
-  card required, excellent quality for shell command generation.
-- **Model selection menu reordered** — free tier listed first to reduce friction for new users.
-
-### 🔒 Security & Config
-
-- **Security notes added** to `config.rs` documenting the plaintext storage tradeoff and the
-  future keychain integration path.
-- **Config path comment** explains the fallback chain (`dirs::config_dir()` → `"."`) and why
-  atomic writes are not used for this file size.
+### 📚 Improvements
+- Deep source annotations across all four modules.
+- `VERSION` const in `ui.rs` as single source of truth for banner version.
+- System prompt tightened (POSIX sh explicit, avoid bash-isms).
+- Help screen expanded with macOS/Linux config paths and ↑/↓ history note.
 
 ---
 
 ## [1.0.0] — 2026-03-22
 
 ### 🌟 Initial Release
-
-- 🚀 **Core REPL loop** — interactive terminal session launched by `yo`, `hi`, or `hello`
-- 🤖 **ASCII banner** — split-panel robot illustration + block-letter YO, RUST! logo on every launch
-- 🔑 **First-run setup** — prompts for OpenRouter API key and model on first launch; never asks again
-- 🧠 **Natural language → shell commands** — structured JSON envelope prompt forces reliable,
-  parseable output from any OpenRouter model
-- ✅ **Y/N confirmation** — no command runs without explicit user approval; bare Enter = Y
-- 💬 **AI explanation** — every suggestion includes a one-sentence plain-English description
-- 🔁 **Intent detection** — 8 regex patterns detect "change my API key / switch model" phrases
-  before any API call, triggering reconfiguration instantly
-- ⌨️ **Shortcuts** — `!help` / `!h`, `!api`, `!exit` / `!q`, `Ctrl+D`
-- 🌍 **Context injection** — OS, arch, CWD, and shell sent with every request for accurate,
-  platform-appropriate command suggestions
-- 🛡️ **Temperature 0.2** — deterministic, conservative outputs; tested across GPT-4o-mini,
-  Claude 3 Haiku, and Llama 3.3 70B
-- 🐚 **Shell aliases** — `hi` and `hello` added to `.zshrc` / `.bashrc` by the installer
-- 📦 **One-command installer** (`yo.sh`) — auto-installs Rust via rustup, clones, builds
-  release binary, installs to `/usr/local/bin/yo` or `~/.local/bin/yo`
-- 📜 **In-session history** — rustyline provides ↑/↓ recall of previous prompts
-- 📚 **Documentation** — `README.md`, `INSTALL.md`, `CHANGELOG.md`, MIT `LICENSE`
-
----
-
-*Future releases will be tracked here.*
+- Core REPL loop via `yo`, `hi`, or `hello`
+- ASCII robot banner + YO, RUST! block-letter logo
+- OpenRouter API integration with strict JSON envelope
+- Y/N confirmation before any command executes
+- First-run interactive setup (API key + model)
+- Context injection (OS, arch, CWD, shell)
+- Regex-based intent detection for API config changes
+- Shortcuts: `!help`, `!api`, `!exit`
+- Shell aliases via installer
+- One-command installer (`yo.sh`) with auto Rust install
+- MIT License
