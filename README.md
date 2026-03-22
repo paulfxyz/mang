@@ -10,7 +10,7 @@
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Powered by OpenRouter](https://img.shields.io/badge/Powered%20by-OpenRouter-6c47ff?style=for-the-badge)](https://openrouter.ai)
 [![Ollama](https://img.shields.io/badge/Supports-Ollama-black?style=for-the-badge)](https://ollama.ai)
-[![Version](https://img.shields.io/badge/Version-2.3.1-brightgreen?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-2.3.2-brightgreen?style=for-the-badge)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](https://github.com/paulfxyz/yo-rust/pulls)
 
@@ -39,7 +39,7 @@
   ║      └─────┬─┬────┘        ██╔══██╗██║   ██║╚════██║   ██║     ║
   ║            │ │             ██║  ██║╚██████╔╝███████║   ██║     ║
   ║           ┌┘ └┐            ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝     ║
-  ║          │░░││░░│           v2.3.1  ·  github.com/paulfxyz       ║
+  ║          │░░││░░│           v2.3.2  ·  github.com/paulfxyz       ║
   ╚══════════════════════════════════════════════════════════════════╝
 ```
 
@@ -57,13 +57,13 @@ Every time: stop → open browser → search → skip ads → scan Stack Overflo
 
 I wanted to type `yo`, describe the thing, get the command, run it.
 
-**No runtime dependencies.** One compiled Rust binary. One `curl | bash` to install. And now in v2.0.0 — a choice of AI backend, memory of what you just did, shell history integration, dry-run mode, and full Windows support.
+**No runtime dependencies.** One compiled Rust binary. One `curl | bash` to install. And now in v2 — a choice of AI backend, memory of what you just did, shell history integration, dry-run mode, and full Windows support.
 
 > 💡 This project was designed and built in collaboration with **[Perplexity Computer](https://www.perplexity.ai)** — architecture, implementation, debugging, and documentation. A genuine example of human intent + AI execution.
 
 ---
 
-## 🌟 What's new in v2.0.0
+## 🌟 v2 — What changed in the major version
 
 | Feature | Description |
 |---|---|
@@ -426,7 +426,7 @@ Get a key: **[openrouter.ai/keys](https://openrouter.ai/keys)**
 - 📝 README: prominent Windows warning, correct `iwr` one-liners at top
 - 📦 INSTALL.md: full Windows section with all three install options
 
-### 🔖 v2.0.0 — 2026-03-22
+### 🔖 v2 milestone highlights
 
 - 🏠 Ollama backend — local inference, no API key, offline support
 - 🔁 Multi-turn context — follow-up prompts resolve correctly
@@ -459,7 +459,7 @@ yo-rust can optionally share anonymised data about which prompts produced useful
 | AI model used | `"openai/gpt-4o-mini"` |
 | OS + shell | `"macos"` + `"zsh"` |
 | Whether it worked | `true` |
-| yo-rust version | `"v2.3.1"` |
+| yo-rust version | `"v2.3.2"` |
 | Timestamp | `"2026-03-22T21:00:00Z"` |
 
 **What is never shared:** API keys, file paths, CWD, command output, username, hostname.

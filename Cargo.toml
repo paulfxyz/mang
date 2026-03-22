@@ -1,6 +1,6 @@
 [package]
 name        = "yo-rust"
-version     = "2.3.1"
+version     = "2.3.2"
 edition     = "2021"
 authors     = ["Paul Fleury <hello@paulfleury.com>"]
 description = "Natural language terminal assistant — OpenRouter, Ollama, dry-run, shell history, multi-turn context."

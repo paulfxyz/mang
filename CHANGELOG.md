@@ -4,6 +4,71 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ---
 
+## [2.3.2] — 2026-03-22
+
+### 🐛 Fixed — Telemetry entries not appearing in JSONBin dashboard
+
+Three bugs were causing the collection to stay empty:
+
+**Bug 1 — Detached thread killed at process exit (critical)**
+The previous code used a fire-and-forget `thread::spawn` whose handle was
+immediately dropped.  When the user exited yo-rust (Ctrl-D, `!exit`, or even
+just closing the terminal) the process terminated and killed all background
+threads before any HTTP request completed.  A network POST to JSONBin takes
+~200–800 ms; a typical REPL session exit is faster than that.
+
+Fix: `submit_background()` now returns `Option<JoinHandle<()>>`.  The main
+REPL loop stores all handles in `pending_telemetry: Vec<JoinHandle<()>>`.  At
+every exit point (Ctrl-D, Ctrl-C, `!exit`) we call `h.join()` on each handle
+before returning.  The HTTP requests complete before the process exits.
+
+**Bug 2 — Silent error swallowing made debugging impossible**
+The previous `submit()` function swallowed all errors silently.  A bad header,
+quota exhausted, or network error all produced identical behaviour: nothing.
+
+Fix: Added `YODEBUG=1` debug mode.  Set `YODEBUG=1` in your environment and
+run `yo` to see the full JSON payload and HTTP response for every telemetry
+request printed to stderr.  Without `YODEBUG`, all telemetry remains silent.
+
+**Bug 3 — `submit` function had a logic error on success tracking**
+The central destination branch had a comment `let _ = format!(...)` path that
+never set `posted_any = true` on HTTP 200.  The code path was:
+```rust
+Ok(resp) if resp.status().is_success() => { posted_any = true; }   // OK
+Ok(resp) => { let _ = format!(...); }  // error — never set posted_any
+```
+But the debug path consumed the response body, so success checking was broken
+when debug mode was added inline.  Refactored into a clean match with explicit
+`posted_any = true` only on 2xx status codes.
+
+**Additional improvements to `telemetry.rs`:**
+- `submit()` signature changed: takes `&TelemetryEntry` (borrow) not owned value,
+  and takes `Option<&str>` not `Option<String>` to avoid unnecessary clones
+- `submit_sync_report()` added: synchronous version that returns a human-readable
+  result string, used by `!feedback test` and personal wizard connectivity check
+- `iso8601_now()` extracted as `pub` for testability; `is_leap()` extracted inline
+- Full doc comments on every public item
+
+### ✨ New — `!feedback test` subcommand
+
+Send a live test entry synchronously and see the result immediately:
+```
+yo ›  !feedback test
+  ◌  Sending test entry to JSONBin…
+  ✔  Entry submitted successfully.
+  ◈  Check your JSONBin dashboard — the entry should appear there now.
+```
+If it fails, the error is shown inline.  Run with `YODEBUG=1 yo` for full
+HTTP-level diagnostics.
+
+### 📚 README updates
+
+- "What's new in v2.0.0" renamed to "v2 — What changed in the major version"
+  so it reads as a milestone summary rather than a version-specific section
+- Inline changelog heading also updated to "v2 milestone highlights"
+
+---
+
 ## [2.3.1] — 2026-03-22
 
 ### ✨ New — `!feedback` / `!fb` shortcut + live JSONBin credentials

@@ -37,6 +37,8 @@ pub enum FeedbackCommand {
     Personal,
     Clear,
     About,
+    /// Send a test entry right now and show the result synchronously
+    Test,
     Unknown(String),
 }
 
@@ -62,6 +64,7 @@ pub fn parse(line: &str) -> Option<FeedbackCommand> {
         "personal"    => FeedbackCommand::Personal,
         "clear"       => FeedbackCommand::Clear,
         "about"       => FeedbackCommand::About,
+        "test"        => FeedbackCommand::Test,
         other         => FeedbackCommand::Unknown(other.to_string()),
     })
 }
@@ -106,6 +109,10 @@ pub fn dispatch(cmd: FeedbackCommand, cfg: &mut Config) -> bool {
 
         FeedbackCommand::Clear => {
             run_clear(cfg)
+        }
+
+        FeedbackCommand::Test => {
+            run_test(cfg)
         }
 
         FeedbackCommand::About => {
@@ -360,6 +367,50 @@ fn run_clear(cfg: &mut Config) -> bool {
     println!("  {}  {}", "◈".cyan(), "Run !feedback setup to reconfigure at any time.".dimmed());
     println!();
     true
+}
+
+// =============================================================================
+//  Test — send a live test entry and show the result synchronously
+// =============================================================================
+
+fn run_test(cfg: &Config) -> bool {
+    use crate::telemetry;
+    use crate::shell::ShellKind;
+
+    println!();
+    println!("{}", "  ◌  Sending test entry to JSONBin…".dimmed());
+
+    let shell_label = ShellKind::detect().label().to_string();
+    let entry = telemetry::TelemetryEntry::new(
+        "!feedback test — connectivity check",
+        &["echo yo-rust-test".to_string()],
+        &cfg.model,
+        &cfg.backend,
+        &shell_label,
+        Some(true),
+    );
+
+    let user_key     = if cfg.telemetry_user_key.is_empty() { None } else { Some(cfg.telemetry_user_key.as_str()) };
+    let user_col     = if cfg.telemetry_user_collection.is_empty() { None } else { Some(cfg.telemetry_user_collection.as_str()) };
+
+    let result = telemetry::submit_sync_report(
+        &entry,
+        cfg.telemetry_share_central,
+        user_key,
+        user_col,
+    );
+
+    if result.contains("successfully") {
+        println!("{}", format!("  ✔  {result}").green().bold());
+        println!("  {}  {}", "◈".cyan(), "Check your JSONBin dashboard — the entry should appear there now.".dimmed());
+        println!("  {}  {}", "◈".cyan(), "https://jsonbin.io → Collections → yo-rust-telemetry".dimmed());
+    } else {
+        println!("{}", format!("  ✗  {result}").red());
+        println!("  {}  {}", "◈".cyan(), "Run with YODEBUG=1 for verbose output:  YODEBUG=1 yo".dimmed());
+        println!("  {}  {}", "◈".cyan(), "Is sharing enabled?  Type !feedback on to enable.".dimmed());
+    }
+    println!();
+    false
 }
 
 // =============================================================================

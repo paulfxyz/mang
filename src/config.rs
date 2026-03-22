@@ -259,12 +259,8 @@ pub fn interactive_setup(cfg: &mut Config) {
     cfg.context_size = input.trim().parse::<usize>().unwrap_or(5).min(20);
 
     // ── Telemetry / community sharing setup ────────────────────────────────────────────
-    let (share_central, user_key, user_col) =
-        crate::telemetry::interactive_setup(cfg.telemetry_share_central);
-    cfg.telemetry_share_central = share_central;
-    if let Some(k) = user_key { cfg.telemetry_user_key = k; }
-    if let Some(c) = user_col { cfg.telemetry_user_collection = c; }
-    cfg.sessions_since_telemetry_prompt = 0; // reset prompt counter
+    // Delegate to the feedback module's setup wizard — single source of truth.
+    crate::feedback::dispatch(crate::feedback::FeedbackCommand::Setup, cfg);
 
     println!();
     println!("{}", "  ✔  Configuration saved.".green().bold());

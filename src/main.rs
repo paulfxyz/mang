@@ -133,6 +133,14 @@ fn main() {
     // Loaded once at startup; !save and !forget persist immediately to disk.
     let mut shortcut_store = shortcuts::ShortcutStore::load();
 
+    // ── 5b. Pending telemetry thread handles ─────────────────────────────────
+    // Background HTTP threads for telemetry submissions.
+    // CRITICAL: We store the JoinHandle for every spawned thread and join them
+    // all before process exit.  Without this, if the user exits immediately
+    // after confirming a command, the process terminates and kills all threads
+    // before any HTTP request completes — the collection stays empty.
+    let mut pending_telemetry: Vec<std::thread::JoinHandle<()>> = Vec::new();
+
     // ── 6. Initialise multi-turn context window ────────────────────────────────
     // Capacity is config.context_size (default 5), or 0 if --no-context passed.
     let ctx_size = if args.no_context { 0 } else { cfg.context_size };
@@ -174,8 +182,17 @@ fn main() {
                 }
                 t
             }
-            Err(ReadlineError::Eof)       => { println!("\n{}", "  Later. ✌".dimmed()); break; }
-            Err(ReadlineError::Interrupted) => { println!("\n{}", "  Interrupted. ✌".dimmed()); break; }
+            Err(ReadlineError::Eof)       => {
+                println!("\n{}", "  Later. ✌".dimmed());
+                // Flush pending telemetry before exit
+                for h in pending_telemetry { let _ = h.join(); }
+                return;
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("\n{}", "  Interrupted. ✌".dimmed());
+                for h in pending_telemetry { let _ = h.join(); }
+                return;
+            }
             Err(e) => { eprintln!("{}", format!("  ✗  Input error: {e}").red()); break; }
         };
 
@@ -222,7 +239,8 @@ fn main() {
             }
             "!exit" | "!quit" | "!q" => {
                 println!("{}", "  Later. ✌".dimmed());
-                break;
+                for h in pending_telemetry { let _ = h.join(); }
+                return;
             }
             _ => {}
         }
@@ -394,25 +412,27 @@ fn main() {
                 history::append_to_history(&suggestion.commands);
             }
 
-            // ── Telemetry: fire-and-forget background submission ─────────────────
-            // Only sent when the user confirmed it worked (worked = true).
-            // Runs in a detached thread — never blocks the REPL loop.
-            if cfg.telemetry_share_central || !cfg.telemetry_user_key.is_empty() {
-                let shell_label = crate::shell::ShellKind::detect().label().to_string();
-                let entry = telemetry::TelemetryEntry::new(
-                    &line,
-                    &suggestion.commands,
-                    &cfg.model,
-                    &cfg.backend,
-                    &shell_label,
-                    Some(true),
-                );
-                telemetry::submit_async(
-                    entry,
-                    cfg.telemetry_share_central,
-                    if cfg.telemetry_user_key.is_empty() { None } else { Some(cfg.telemetry_user_key.clone()) },
-                    if cfg.telemetry_user_collection.is_empty() { None } else { Some(cfg.telemetry_user_collection.clone()) },
-                );
+            // ── Telemetry: background submission with tracked handle ─────────────
+            // We call submit_background() which returns a JoinHandle.
+            // We store it in pending_telemetry so we can join() it at exit,
+            // ensuring the HTTP request completes even if the user exits
+            // immediately after this command.
+            let shell_label = crate::shell::ShellKind::detect().label().to_string();
+            let telem_entry = telemetry::TelemetryEntry::new(
+                &line,
+                &suggestion.commands,
+                &cfg.model,
+                &cfg.backend,
+                &shell_label,
+                Some(true),
+            );
+            if let Some(handle) = telemetry::submit_background(
+                telem_entry,
+                cfg.telemetry_share_central,
+                if cfg.telemetry_user_key.is_empty() { None } else { Some(cfg.telemetry_user_key.clone()) },
+                if cfg.telemetry_user_collection.is_empty() { None } else { Some(cfg.telemetry_user_collection.clone()) },
+            ) {
+                pending_telemetry.push(handle);
             }
 
             println!("{}", "  ◈  Great! What else?".dimmed());
