@@ -1,35 +1,69 @@
 [package]
-name = "yo-rust"
-version = "1.0.0"
-edition = "2021"
-authors = ["Paul Fleury <hello@paulfleury.com>"]
+name        = "yo-rust"
+version     = "1.1.0"
+edition     = "2021"
+authors     = ["Paul Fleury <hello@paulfleury.com>"]
 description = "Natural language terminal assistant powered by OpenRouter AI — just type 'yo'."
-license = "MIT"
-repository = "https://github.com/paulfxyz/yo-rust"
-homepage = "https://github.com/paulfxyz/yo-rust"
-keywords = ["cli", "ai", "shell", "terminal", "openrouter"]
-categories = ["command-line-utilities"]
+license     = "MIT"
+repository  = "https://github.com/paulfxyz/yo-rust"
+homepage    = "https://github.com/paulfxyz/yo-rust"
+keywords    = ["cli", "ai", "shell", "terminal", "openrouter"]
+categories  = ["command-line-utilities"]
 
+# ── Binary entry point ────────────────────────────────────────────────────────
+# The compiled binary is named `yo` rather than `yo-rust` so the user can type
+# `yo` directly in the terminal after installation.
 [[bin]]
 name = "yo"
 path = "src/main.rs"
 
+# ── Runtime dependencies ──────────────────────────────────────────────────────
 [dependencies]
-# HTTP client for OpenRouter API calls
+
+# reqwest — HTTP client used for the single blocking POST to the OpenRouter API.
+# We use `blocking` (not async/tokio) deliberately: there is only ONE outbound
+# request per user prompt, so the complexity of an async runtime (tokio, etc.)
+# buys nothing and adds significant compile time and binary size.
+# The `json` feature enables `.json(&body)` / `.json::<T>()` on request/response.
 reqwest = { version = "0.12", features = ["blocking", "json"] }
-# JSON serialization / deserialization
-serde = { version = "1", features = ["derive"] }
+
+# serde + serde_json — zero-cost serialization framework used for:
+#   1. Serialising the ChatRequest struct → JSON body sent to OpenRouter.
+#   2. Deserialising the ChatResponse JSON → Rust struct.
+#   3. Serialising/deserialising the Config struct ↔ config.json on disk.
+# The `derive` feature generates Serialize/Deserialize impls at compile time.
+serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Cross-platform config directory resolution
+
+# dirs — resolves the OS-appropriate config directory at runtime:
+#   macOS  → ~/Library/Application Support
+#   Linux  → ~/.config          (XDG_CONFIG_HOME or fallback)
+#   Windows→ %APPDATA%
+# Using this instead of hard-coding `~/.config` ensures correctness on all
+# platforms without manual env-var inspection.
 dirs = "5"
-# Terminal color and style output
+
+# colored — ANSI terminal colour helpers.  Chosen over `termcolor` or raw ANSI
+# codes because its method-chaining API (`.cyan().bold()`) is ergonomic and
+# the crate respects the NO_COLOR environment variable automatically.
 colored = "2"
-# Read user input with line editing
+
+# rustyline — readline-style line editor: arrow-key history navigation,
+# Ctrl-A/E/W/U shortcuts, and cross-platform (Unix + Windows).
+# We call `add_history_entry` after each non-empty prompt so the user can
+# press ↑ to recall previous queries within the same session.
 rustyline = "14"
-# Regex for detecting !commands and API-change intent
+
+# regex — used exclusively in `ai::intent_is_api_change` to detect natural
+# language phrases that mean "please reconfigure my API key/model" without
+# spending a network round-trip asking the LLM what the user meant.
+# Compiled patterns are NOT cached here because this function is called at most
+# once per user message and the patterns are trivially short.
 regex = "1"
 
+# ── Release profile ───────────────────────────────────────────────────────────
+# These settings produce the smallest, fastest binary for distribution.
 [profile.release]
-opt-level = 3
-strip = true
-lto = true
+opt-level = 3   # Maximum LLVM optimisation passes (speed over compile time)
+strip     = true # Strip debug symbols from the binary (saves ~1–2 MB)
+lto       = true # Link-time optimisation: cross-crate inlining + dead-code removal
