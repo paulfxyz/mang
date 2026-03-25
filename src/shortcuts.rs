@@ -218,10 +218,13 @@ pub fn parse_shortcut_input(line: &str) -> ShortcutInput {
         return ShortcutInput::NotAShortcut;
     }
 
-    // Already-handled built-in shortcuts (don't intercept them here)
+    // Already-handled built-in shortcuts (don't intercept them here).
+    // !prompt / !p are handled in main.rs before this function is called.
     match line {
         "!help" | "!h" | "!api" | "!exit" | "!quit" | "!q"
-        | "!context" | "!ctx" | "!clear" => return ShortcutInput::NotAShortcut,
+        | "!context" | "!ctx" | "!clear"
+        | "!prompt" | "!p"
+        => return ShortcutInput::NotAShortcut,
         _ => {}
     }
 

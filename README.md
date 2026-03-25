@@ -10,7 +10,7 @@
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Powered by OpenRouter](https://img.shields.io/badge/Powered%20by-OpenRouter-6c47ff?style=for-the-badge)](https://openrouter.ai)
 [![Ollama](https://img.shields.io/badge/Supports-Ollama-black?style=for-the-badge)](https://ollama.ai)
-[![Version](https://img.shields.io/badge/Version-3.0.1-brightgreen?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-3.0.2-brightgreen?style=for-the-badge)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](https://github.com/paulfxyz/mang-sh/pulls)
 
@@ -43,7 +43,7 @@
   ║   ███████║██║  ██║                            ║
   ║   ╚══════╝╚═╝  ╚═╝                            ║
   ║                                               ║
-  ║   v3.0.1  ·  mang.sh  ·  github.com/paulfxyz  ║
+  ║   v3.0.2  ·  mang.sh  ·  github.com/paulfxyz  ║
   ╚═══════════════════════════════════════════════╝
 ```
 
@@ -141,6 +141,7 @@ The misconception: Rust is for operating systems, game engines, embedded firmwar
 | 句芒 Spirit banner | Block-letter `MANG` / `.sh` with Gou Mang (句芒) subtitle on every launch |
 | 🧠 Intent detection | "use ollama" / "change model" triggers reconfiguration without API call |
 | 📟 Rich shortcuts | `!help`, `!api`, `!feedback`, `!shortcuts`, `!context`, `!update`, `!exit` |
+| 🧭 Prompt wizard | `!prompt` / `!p` — guided 3-question mode when you're stuck or request is vague |
 | 🐚 Three aliases | `yo`, `hi`, `hello` — all invoke the spirit messenger |
 | 🌍 Context-aware | OS, arch, CWD, and precise shell sent with every request |
 | 🛡️ Safe prompting | Temperature 0.2 — deterministic, conservative suggestions |
@@ -306,6 +307,7 @@ Persisted to `~/.config/mang-sh/shortcuts.json` across sessions.
 
 | Input | What happens |
 |---|---|
+| `!prompt` / `!p` | Advanced Prompt Mode — up to 3 AI questions to clarify a vague request |
 | `!help` / `!h` | Full help screen |
 | `!update` / `!check` | Check for a new version, offer to install |
 | `!api` | Reconfigure backend, model, API key, history, context |
@@ -436,6 +438,27 @@ The most counterintuitive Windows bug: `$ErrorActionPreference = "Stop"` + `2>&1
 
 ## 🔬 Lessons learned — building mang.sh from scratch
 
+
+### On prompt engineering for tool-use UIs
+
+**When the tool can't understand you, the tool should ask — not just fail.**
+The original empty-suggestion path printed a message and returned to the blank
+prompt.  Users were left wondering: was the prompt too vague? Wrong phrasing?
+The AI broken?  Adding the wizard converted a dead end into a guided recovery.
+
+**"Prompt coaching" is a different mode than "command generation".**
+The same AI backend can play two completely different roles depending on the
+system prompt.  Command generation uses `temperature=0.2`, strict JSON schema,
+and deterministic phrasing.  Prompt coaching uses `temperature=0.5`, plain
+prose, and a conversational tone.  Separating these into `suggest_commands()`
+vs `suggest_raw()` keeps both clean.
+
+**Synthesis beats summarisation.**  Rather than asking the AI to summarise
+collected Q&A context into a refined prompt (extra round-trip, non-deterministic),
+we simply concatenate the original prompt + user answers with `". "` and pass
+that compound sentence to `suggest_commands()`.  The downstream AI handles
+disambiguation naturally from rich context.
+
 ### On LLM prompt engineering
 
 **State your output format twice.** LLMs attenuate instructions that appeared many tokens ago. Stating the JSON schema once at the top and again in a concrete example dramatically improves compliance, especially on smaller models.
@@ -491,7 +514,7 @@ mang.sh can optionally share anonymised data to improve the AI system prompt. Re
 | Model | `"openai/gpt-4o-mini"` |
 | OS + shell | `"macos"` + `"zsh"` |
 | Worked | `true` |
-| Version | `"v3.0.1"` |
+| Version | `"v3.0.2"` |
 | Timestamp | `"2026-03-23T12:00:00Z"` |
 
 **Never shared:** API keys, file paths, CWD, command output, username, hostname.
@@ -519,6 +542,9 @@ Get a key: **[openrouter.ai/keys](https://openrouter.ai/keys)**
 ## 📝 Changelog
 
 > Full history: **[CHANGELOG.md](CHANGELOG.md)**
+
+### 🔖 v3.0.2 — 2026-03-25
+- 🧭 **Advanced Prompt Mode** (`!prompt` / `!p`) — up to 3 AI-generated clarifying questions when you're stuck; auto-triggers when the AI returns no commands
 
 ### 🔖 v3.0.1 — 2026-03-23
 - 🎨 Redesigned banner: clean block-letter `MANG` (cyan) + `.sh` (bold white), `句芒 · Gou Mang · Spirit Messenger` header, minimal dim frame

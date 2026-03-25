@@ -9,6 +9,15 @@
 //  asks for confirmation, runs them, appends them to shell history, and
 //  remembers the last N turns for follow-up context.
 //
+//  NEW IN v3.0.2
+//  ─────────────────
+//  • Advanced Prompt Mode (!prompt / !p)
+//      Short Socratic dialogue (up to 3 rounds) that helps users who are stuck.
+//      The AI generates targeted clarifying questions; the user's answers are
+//      synthesised into a precise prompt fed to the normal suggest_commands()
+//      pipeline.  Triggers manually (!prompt / !p) or automatically when the
+//      AI returns an empty commands array.
+//
 //  NEW IN v2.3.5
 //  ─────────────
 //  • Update check   Background version check on launch; !update / !check
@@ -63,6 +72,7 @@ mod config;
 mod context;
 mod feedback;
 mod history;
+mod prompt_wizard;
 mod shell;
 mod shortcuts;
 mod telemetry;
@@ -315,6 +325,69 @@ fn main() {
                 for h in pending_telemetry { let _ = h.join(); }
                 return;
             }
+
+            // ── Advanced Prompt Mode (explicit trigger) ───────────────────────
+            // User typed !prompt or !p at the yo › prompt.
+            // We run the wizard with an empty "original" so it starts fresh and
+            // asks a completely open first question.
+            "!prompt" | "!p" => {
+                match prompt_wizard::run(&mut rl, &cfg, &conversation, "") {
+                    prompt_wizard::WizardResult::Prompt(refined) => {
+                        // Feed the synthesised prompt through the normal AI pipeline.
+                        println!("{}", "  ◌  Thinking…".dimmed());
+                        match ai::suggest_commands(&cfg, &conversation, &refined) {
+                            Err(e) => {
+                                eprintln!("{}", format!("  ✗  AI request failed: {e}").red());
+                            }
+                            Ok(s) if s.commands.is_empty() => {
+                                ui::print_empty_suggestion(&s);
+                                println!(
+                                    "  {}  {}",
+                                    "◈".yellow(),
+                                    "Still unclear — try rephrasing or use !prompt again.".dimmed()
+                                );
+                            }
+                            Ok(s) => {
+                                // Show the suggestion and full Y/N confirmation
+                                ui::print_suggestion(&s, args.dry_run);
+                                if !args.dry_run {
+                                    let run_it = loop {
+                                        let ans = match rl.readline(&format!("{} ", "  Run it? [Y/n] ›".yellow().bold())) {
+                                            Ok(a)  => a.trim().to_lowercase(),
+                                            Err(_) => "n".to_string(),
+                                        };
+                                        match ans.as_str() {
+                                            "y" | "yes" | "" => break true,
+                                            "n" | "no"       => break false,
+                                            _  => println!("{}", "  Please press Y or N.".yellow()),
+                                        }
+                                    };
+                                    if run_it {
+                                        let ok = execute_commands(&s.commands);
+                                        if ok {
+                                            conversation.push(&refined, &s.commands);
+                                            if history_enabled {
+                                                history::append_to_history(&s.commands);
+                                            }
+                                            println!("{}", "  ◈  Great! What else?".dimmed());
+                                        }
+                                    } else {
+                                        println!("{}", "  ◈  Skipped.".dimmed());
+                                    }
+                                } else {
+                                    // Dry-run: record in context so follow-ups work
+                                    conversation.push(&refined, &s.commands);
+                                }
+                            }
+                        }
+                    }
+                    prompt_wizard::WizardResult::Abandoned => {
+                        // User bailed — nothing to do, loop back to the prompt
+                    }
+                }
+                continue;
+            }
+
             _ => {}
         }
 
@@ -402,6 +475,70 @@ fn main() {
 
         if suggestion.commands.is_empty() {
             ui::print_empty_suggestion(&suggestion);
+
+            // ── Auto-trigger Advanced Prompt Mode ─────────────────────────────
+            // The AI couldn't pin down a command from the user's prompt.
+            // Rather than returning to a blank prompt and leaving the user
+            // stranded, we automatically enter the wizard with the original
+            // vague prompt as context so its first question is targeted.
+            // The user can opt out immediately by pressing Enter (abandons gracefully).
+            println!();
+            println!(
+                "  {}  {}",
+                "◈".yellow().bold(),
+                "Let's clarify your request with a few quick questions.".white()
+            );
+
+            match prompt_wizard::run(&mut rl, &cfg, &conversation, &line) {
+                prompt_wizard::WizardResult::Prompt(refined) => {
+                    println!("{}", "  ◌  Thinking…".dimmed());
+                    match ai::suggest_commands(&cfg, &conversation, &refined) {
+                        Err(e) => eprintln!("{}", format!("  ✗  AI request failed: {e}").red()),
+                        Ok(s) if s.commands.is_empty() => {
+                            ui::print_empty_suggestion(&s);
+                            println!(
+                                "  {}  {}",
+                                "◈".yellow(),
+                                "Still couldn't find a command — try a completely different phrasing.".dimmed()
+                            );
+                        }
+                        Ok(s) => {
+                            // Wizard produced a valid suggestion — show it and
+                            // run the full Y/N → execute → history pipeline.
+                            ui::print_suggestion(&s, args.dry_run);
+                            if !args.dry_run {
+                                let run_it = loop {
+                                    let ans = match rl.readline(&format!("{} ", "  Run it? [Y/n] ›".yellow().bold())) {
+                                        Ok(a)  => a.trim().to_lowercase(),
+                                        Err(_) => "n".to_string(),
+                                    };
+                                    match ans.as_str() {
+                                        "y" | "yes" | "" => break true,
+                                        "n" | "no"       => break false,
+                                        _  => println!("{}", "  Please press Y or N.".yellow()),
+                                    }
+                                };
+                                if run_it {
+                                    let ok = execute_commands(&s.commands);
+                                    if ok {
+                                        conversation.push(&refined, &s.commands);
+                                        if history_enabled {
+                                            history::append_to_history(&s.commands);
+                                        }
+                                        println!("{}", "  ◈  Great! What else?".dimmed());
+                                    }
+                                } else {
+                                    println!("{}", "  ◈  Skipped.".dimmed());
+                                }
+                            } else {
+                                conversation.push(&refined, &s.commands);
+                            }
+                        }
+                    }
+                }
+                prompt_wizard::WizardResult::Abandoned => {}
+            }
+
             continue;
         }
 

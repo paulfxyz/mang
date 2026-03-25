@@ -4,6 +4,106 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ---
 
+## [3.0.2] — 2026-03-25
+
+### Added
+
+#### Advanced Prompt Mode (`!prompt` / `!p`)
+
+When you're stuck — prompt too vague, AI returned nothing, or you just want
+a more guided experience — Advanced Prompt Mode runs a short Socratic dialogue
+to help you build the right request.
+
+**How it works:**
+
+Up to 3 rounds of AI-generated clarifying questions.  Each question is targeted
+at the most ambiguous part of what you said.  Answer as many or as few as you
+want — press Enter or type `!skip` to fire with what's been gathered so far.
+Your answers are synthesised into one precise prompt that goes through the
+normal `suggest_commands()` pipeline.  Nothing executes without the usual Y
+confirmation.
+
+**Trigger paths:**
+
+| How | When |
+|---|---|
+| Type `!prompt` or `!p` | Any time — starts from scratch with an open first question |
+| Automatic | When the AI returns no commands (couldn't interpret your request) |
+
+**Example session:**
+
+```
+yo ›  do the docker thing
+
+  ◌  Thinking…
+  ✗  Gou Mang couldn't pin that down. Let's clarify.
+
+  ╔═══════════════════════════════════════════════╗
+  ║  ✦  Advanced Prompt Mode                      ║
+  ║     I'll ask up to 3 questions to nail it.    ║
+  ╚═══════════════════════════════════════════════╝
+
+  ✦  (1/3)  What do you want Docker to do — start, stop,
+             restart, view logs, or something else?
+
+  yo ›  restart my app container
+
+  ✦  (2/3)  What's the container name or ID?
+
+  yo ›  myapp
+
+  ◌  Building your command…
+  ◈  Refined: do the docker thing. restart my app container. myapp.
+
+  ◌  Thinking…
+
+  ◈  Restarts the container named myapp.
+  ┌────────────────────────────────────────────┐
+  │  $  docker restart myapp                  │
+  └────────────────────────────────────────────┘
+
+  Run it? [Y/n] ›
+```
+
+**New module: `src/prompt_wizard.rs`**
+
+The wizard is a dedicated module (`MAX_ROUNDS = 3`) with clean separation of:
+- `run()` — orchestrates the dialogue loop
+- `coach_prompt()` — builds the AI prompt for each clarifying question
+- `synthesise()` — pure string synthesis (no AI call, always deterministic)
+- UI helpers — `print_wizard_header()`, `print_wizard_question()`
+
+**New function: `ai::suggest_raw()`**
+
+The wizard needs freeform text (clarifying questions), not the strict JSON schema
+used by `suggest_commands()`.  `suggest_raw()` calls the same backends but with
+a permissive system prompt and returns the raw content string.  Temperature 0.5
+(vs 0.2 for commands) produces more natural-sounding questions.
+
+#### Lessons learned
+
+**The "prompt coach" framing matters more than the schema.**
+First attempt tried parsing the AI's clarifying question as a `Suggestion` JSON
+blob and using the `explanation` field as the question text.  This was fragile —
+small models sometimes wrap freeform text in JSON, sometimes don't.  The fix:
+a separate `suggest_raw()` function with a completely different system prompt
+that explicitly says "just ask one short question, no JSON, no markdown".
+
+**Synthesise, don't summarise.**
+The wizard doesn't ask the AI to summarise the collected context.  It just joins
+the original prompt + all user answers with `". "` and sends that compound
+sentence to `suggest_commands()`.  Deterministic, fast, and the downstream AI
+handles disambiguation well from rich context.  An AI-assisted synthesis step
+would add a network round-trip for no meaningful quality improvement.
+
+**Auto-trigger needs a graceful escape.**
+When the wizard auto-triggers on an empty suggestion, the user might not want
+it — they might want to retype from scratch.  The escape is immediate: pressing
+Enter on the first wizard question abandons cleanly.  No extra keystrokes, no
+`Ctrl-C` required.
+
+---
+
 ## [3.0.1] — 2026-03-23
 
 ### Changed

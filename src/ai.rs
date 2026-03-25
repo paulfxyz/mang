@@ -448,6 +448,148 @@ fn parse_suggestion(raw: &str) -> Result<Suggestion, Box<dyn std::error::Error>>
 }
 
 // =============================================================================
+//  suggest_raw — freeform AI call for the prompt wizard
+//
+//  Unlike suggest_commands(), this does NOT enforce the JSON schema.
+//  We want a plain conversational sentence (a clarifying question), not
+//  structured data.  The function is intentionally minimal — it sends a
+//  simple system+user message pair and returns the raw content string.
+//
+//  DESIGN
+//  ──────
+//  • Temperature 0.5 (vs 0.2 for commands): we want natural, varied phrasing
+//    for questions, not the single most-probable token sequence.
+//  • max_tokens 256: clarifying questions are short — no need for the full
+//    512-token budget we allocate for command generation.
+//  • Same HTTP infrastructure as suggest_commands() — no new client setup.
+//  • The caller (prompt_wizard.rs) handles empty/error responses gracefully
+//    by skipping to synthesis with whatever context was already collected.
+// =============================================================================
+
+/// Call the AI backend and return a raw freeform text response.
+///
+/// Used by the prompt wizard to generate clarifying questions.
+/// Unlike `suggest_commands()`, this does NOT parse JSON — it returns
+/// the model's raw output as a `String`.
+///
+/// # Arguments
+/// * `cfg`     — user configuration (backend, model, api_key, ollama_url)
+/// * `_ctx`    — conversation context (accepted but not injected, to keep
+///               the coach call self-contained and unaffected by prior turns)
+/// * `prompt`  — the full coach prompt (already formatted by the wizard)
+pub fn suggest_raw(
+    cfg:  &Config,
+    _ctx: &ConversationContext,
+    prompt: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    match cfg.backend.as_str() {
+        "ollama" => suggest_raw_ollama(cfg, prompt),
+        _        => suggest_raw_openrouter(cfg, prompt),
+    }
+}
+
+/// Raw freeform call via OpenRouter (no JSON schema enforcement).
+fn suggest_raw_openrouter(
+    cfg:    &Config,
+    prompt: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Minimal message array: a permissive system prompt + the coach prompt.
+    // We deliberately do NOT inject our strict JSON system prompt here.
+    let messages = vec![
+        OrMessage {
+            role:    "system",
+            content: "You are a helpful assistant. Answer concisely and conversationally. \
+                      Do not use markdown, JSON, or bullet points. \
+                      One or two short sentences maximum.".to_string(),
+        },
+        OrMessage {
+            role:    "user",
+            content: prompt.to_string(),
+        },
+    ];
+
+    let body = OrChatRequest {
+        model:       &cfg.model,
+        messages,
+        temperature: 0.5,  // slightly higher for natural-sounding questions
+        max_tokens:  256,  // questions are short
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+
+    let resp = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", cfg.api_key))
+        .header("Content-Type",  "application/json")
+        .header("HTTP-Referer",  "https://github.com/paulfxyz/mang-sh")
+        .header("X-Title",       "mang.sh")
+        .json(&body)
+        .send()?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text   = resp.text().unwrap_or_default();
+        return Err(format!("OpenRouter {status}: {text}").into());
+    }
+
+    let chat: OrChatResponse = resp.json()?;
+    let raw = chat.choices.into_iter().next()
+        .map(|c| c.message.content)
+        .ok_or("Empty response from OpenRouter")?;
+
+    Ok(raw.trim().to_string())
+}
+
+/// Raw freeform call via Ollama (no JSON schema enforcement).
+fn suggest_raw_ollama(
+    cfg:    &Config,
+    prompt: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let messages = vec![
+        OllamaMessage {
+            role:    "system".to_string(),
+            content: "You are a helpful assistant. Answer concisely and conversationally. \
+                      Do not use markdown, JSON, or bullet points. \
+                      One or two short sentences maximum.".to_string(),
+        },
+        OllamaMessage {
+            role:    "user".to_string(),
+            content: prompt.to_string(),
+        },
+    ];
+
+    let body = OllamaChatRequest {
+        model:    cfg.model.clone(),
+        messages,
+        stream:   false,
+        options:  OllamaOptions { temperature: 0.5, num_predict: 256 },
+    };
+
+    let url = format!("{}/api/chat", cfg.ollama_url.trim_end_matches('/'));
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("Could not reach Ollama at {url}: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text   = resp.text().unwrap_or_default();
+        return Err(format!("Ollama {status}: {text}").into());
+    }
+
+    let chat: OllamaChatResponse = resp.json()?;
+    Ok(chat.message.content.trim().to_string())
+}
+
+// =============================================================================
 //  Intent detection — natural language config triggers
 //
 //  These regex patterns intercept prompts that mean "please reconfigure me"

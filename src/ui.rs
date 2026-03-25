@@ -27,7 +27,7 @@ use colored::Colorize;
 
 /// Current version — single source of truth for the banner.
 /// Synced with Cargo.toml `version` field.
-const VERSION: &str = "v3.0.1";
+const VERSION: &str = "v3.0.2";
 
 // =============================================================================
 //  print_banner
@@ -230,7 +230,7 @@ pub fn print_intro(cfg: &Config, dry_run: bool) {
     println!(
         "  {}  {}",
         "◈".cyan().bold(),
-        "Y to run · N to refine · !help for all shortcuts.".dimmed()
+        "Y to run · N to refine · !prompt to clarify · !help for all shortcuts.".dimmed()
     );
     println!();
 }
@@ -314,6 +314,7 @@ pub fn print_help(cfg: &Config, dry_run: bool, history_enabled: bool, ctx_size: 
     // Shortcuts
     println!("  {}", "SHORTCUTS".white().bold());
     let shortcuts: &[(&str, &str)] = &[
+        ("!prompt / !p",     "Advanced Prompt Mode — guided questions to clarify vague requests"),
         ("!help  / !h",      "This help screen"),
         ("!update / !check", "Check for a new version and offer to install it"),
         ("!api",             "Update backend, API key, model, history & context"),
