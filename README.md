@@ -49,6 +49,34 @@
 
 ---
 
+> This README is a deeply technical reference — it documents not just *how* to use mang.sh, but *why* every architectural decision was made, every bug that was hit, and every lesson learned building it across 13 versions. If you're building a similar tool or want to understand how a production-grade AI CLI is architected in Rust, read on.
+
+---
+
+## Table of Contents
+
+1. [Gou Mang — the myth](#-gou-mang-the-spirit-messenger)
+2. [Why this exists](#-why-this-exists)
+3. [Why Rust](#-why-rust--a-serious-answer)
+4. [Feature overview](#-feature-overview)
+5. [Install](#-install)
+6. [See it in action](#-see-it-in-action)
+7. [Ollama — local, private, offline](#-ollama--local-private-offline)
+8. [Named shortcuts](#-named-shortcuts--instant-command-replay)
+9. [All shortcuts](#️-all-shortcuts)
+10. [Code structure](#-code-structure)
+11. [Architecture deep dive](#-architecture--how-it-works)
+12. [Bugs worth documenting](#-bugs--the-ones-worth-documenting)
+13. [Building with Perplexity Computer](#-building-with-perplexity-computer)
+14. [Lessons learned](#-lessons-learned--building-mangsh-from-scratch)
+15. [Community telemetry](#-community-data--telemetry)
+16. [Model recommendations](#-openrouter-model-recommendations)
+17. [Changelog](#-changelog)
+18. [Contributing](#-contributing)
+19. [Author](#-author)
+
+---
+
 ## 句芒 — Gou Mang, the Spirit Messenger
 
 In ancient Chinese mythology, **Gou Mang (句芒)** served as the divine messenger between the Emperor of Heaven and the mortal world. He carried intent across the boundary between realms — translating the will of heaven into action on earth.
@@ -440,8 +468,237 @@ Background threads are killed when the process exits. If you confirm a command a
 
 The most counterintuitive Windows bug: `$ErrorActionPreference = "Stop"` + `2>&1` kills the build script when `cargo` writes progress to stderr — even on success. `cargo` writes *all* progress output to stderr, not stdout. Every "Compiling foo v1.0" line becomes an `ErrorRecord` that triggers the Stop preference. Fix: remove `$ErrorActionPreference = "Stop"`, remove `2>&1`, let cargo output flow freely, check `$LASTEXITCODE` after.
 
+
+### The REPL loop — design decisions
+
+The main loop in `main.rs` is a blocking `loop {}` with a `rustyline` readline call at the top. Here's why every major decision was made the way it was:
+
+**Why synchronous?** One AI call per user turn. The user is the bottleneck — they type, they read, they decide. Adding `tokio` for async would cost ~200 KB of binary size, 30 additional seconds of first compile time, and produce zero improvement in responsiveness from the user's perspective. Async is for servers. This is a CLI tool.
+
+**Why `rustyline` and not raw `stdin.read_line()`?** Raw `stdin.read_line()` gives you no arrow key editing, no `Ctrl-W` word delete, no `↑`/`↓` session history. A REPL without readline feels broken. `rustyline` is the `readline` equivalent for Rust — battle-tested, used by `evcxr` (the Rust REPL), supports all expected key bindings, and integrates in five lines. The `add_history_entry()` call keeps in-session history separate from the shell's own history file (which `history.rs` handles as a distinct concern).
+
+**Why is the context window bounded?** The `ConversationContext` holds at most N prior `(prompt, commands)` pairs. N is configurable (default 5). Without a bound, a long session would inject an unbounded token payload into every AI request — costs money, slows responses, and eventually exceeds context window limits on smaller models. Five turns is enough to resolve any pronoun or relative reference a user would realistically make in a single task.
+
+**The four exit paths problem.** The main REPL has exactly four ways to exit:
+1. `Ctrl-D` → `ReadlineError::Eof`
+2. `Ctrl-C` → `ReadlineError::Interrupted`
+3. `!exit` / `!q` → explicit shortcut
+4. readline error → other `ReadlineError` variant
+
+Every single one must call `h.join()` on all pending telemetry handles before returning. This was not the case in v2.3.0 — detached threads were killed on process exit, silently losing every telemetry entry. The fix was a `Vec<JoinHandle<()>>` that accumulates handles and is joined at all four exit points. Finding all four exit points is the kind of audit that's easy to miss on the first pass.
+
+### The system prompt — the most important "code" in the project
+
+The system prompt in `ai.rs::SYSTEM_PROMPT` is a constant string, but it's where most of the product design lives. Some specific decisions:
+
+**Why are the rules numbered?** Because LLMs follow numbered lists better than prose paragraphs. The numbered format also makes it easy to reference specific rules when debugging model behaviour.
+
+**Why state the JSON schema twice?** Rule 2 states the schema abstractly. The example restates it concretely. On smaller models like Llama 3.2 7B, having the schema appear only once produced ~60% JSON compliance. Adding a concrete example brought it to ~92%. The redundancy is intentional.
+
+**Why rule 7 (empty commands fallback)?** Without an explicit escape hatch for non-shell requests, the model either invents nonsensical shell commands or produces malformed JSON. Rule 7 gives it a clean output: `{"commands": [], "explanation": "I cannot express this as a shell command."}`. The empty commands array triggers the prompt wizard (v3.0.2+) rather than showing a dead-end error.
+
+**Why temperature 0.2 and not 0?** Full greedy decoding (temperature=0) creates a failure mode where ambiguous prompts get stuck producing the same wrong command repeatedly. Temperature 0.2 introduces just enough variability to break out of local optima while keeping the output firmly in the "conventional and correct" zone. Tested across GPT-4o-mini, Claude 3 Haiku, Claude 3.5 Sonnet, and Llama 3.2 — 0.2 is consistently correct.
+
+### The JSON parsing pipeline — belt and suspenders
+
+Despite the system prompt, some models (particularly smaller Ollama models) occasionally wrap their output in markdown fences. The `parse_suggestion()` function strips these before attempting JSON parse:
+
+```rust
+let cleaned = raw
+    .trim()
+    .trim_start_matches("```json")
+    .trim_start_matches("```")
+    .trim_end_matches("```")
+    .trim();
+```
+
+Order matters: try the longer prefix first. This is belt-and-suspenders engineering — the system prompt says "no markdown fences" and we strip them anyway, because the cost of the strip is zero and the cost of a parse failure is a broken user experience.
+
+We parse into `serde_json::Value` rather than a typed struct for three reasons:
+1. Missing fields return `None` instead of panicking
+2. The raw response is embedded in the error message for debugging
+3. The `explanation` field is truly optional without `Option<String>` ceremony
+
+### Shell detection — the full matrix
+
+`shell.rs` implements a `ShellKind` enum with 8 variants:
+
+```
+ShellKind::Zsh         — $SHELL ends in "zsh" OR $ZSH_VERSION is set
+ShellKind::Bash        — $SHELL ends in "bash" AND not Git Bash
+ShellKind::Fish        — $SHELL ends in "fish" OR $FISH_VERSION is set
+ShellKind::Sh          — $SHELL ends in "/sh" (non-bash POSIX shells)
+ShellKind::GitBash     — Windows + MINGW or MSYS in $MSYSTEM
+ShellKind::PowerShell5 — Windows + PSVersion.Major == 5
+ShellKind::PowerShell7 — Windows + PSVersion.Major >= 7
+ShellKind::Cmd         — Windows + none of the above (cmd.exe fallback)
+ShellKind::Unknown     — last resort
+```
+
+The `syntax=` hint derived from this detection is the single most impactful addition to the AI context. Before it existed, Windows users got POSIX-syntax commands — which worked in Git Bash but failed in cmd.exe and PowerShell. The `syntax=cmd` and `syntax=powershell` hints tell the AI exactly which syntax family to target.
+
+**Why PowerShell 5 and 7 are distinct:** PS5 doesn't support `&&` for command chaining. PS7 does. Version-specific detection means PS5 users get `;`-separated commands and PS7 users get `&&` chains — both correct for their environment.
+
+**The Git Bash trap:** On Windows, Git Bash sets `$SHELL=/usr/bin/bash` — identical to native bash on Linux. Without the `$MSYSTEM` environment variable check (which Git Bash sets to `MINGW64`), mang.sh would detect Git Bash as plain bash and generate commands that fail in the user's primary Windows shell.
+
+### The prompt wizard architecture — v3.0.2
+
+The wizard in `prompt_wizard.rs` is built around one key insight: **the AI needs to ask questions, not generate commands.** These are fundamentally different tasks requiring different system prompts, temperatures, and output contracts.
+
+```
+User's vague prompt
+        ↓
+   coach_prompt()         ← "prompt coach" system message, temperature=0.5
+        ↓
+   ai::suggest_raw()      ← freeform call, no JSON schema, max_tokens=256
+        ↓
+   One plain question     ← prose, no JSON required
+        ↓
+   User answers (up to 3×)
+        ↓
+   synthesise()           ← pure string join, NO extra AI call
+        ↓
+   suggest_commands()     ← normal pipeline with enriched compound prompt
+```
+
+**Why `suggest_raw()` instead of reusing `suggest_commands()`?** The JSON schema forces the AI to produce `{"commands": [...], "explanation": "..."}`. When you ask an AI to generate a clarifying question through this schema, it tries to fit the question into `explanation` and produces nonsense in `commands`. A separate function with a separate contract — "just return plain text, one short question" — is the correct solution.
+
+**Why is synthesis a string join and not another AI call?** The first design passed all Q&A back to the AI to synthesise a clean prompt. This added one more network round-trip (500ms–3s), was non-deterministic, and occasionally produced worse prompts than naive concatenation. Joining the original prompt and user answers with `". "` feeds a richer context string to `suggest_commands()` and lets the downstream AI handle disambiguation. Deterministic, instant, offline.
+
+### Named shortcuts — the `ShortcutStore` design
+
+```rust
+pub struct ShortcutStore {
+    pub shortcuts: HashMap<String, Vec<String>>,
+}
+```
+
+A flat `HashMap<String, Vec<String>>`. Serialised to `~/.config/mang-sh/shortcuts.json`. Three decisions:
+
+**Names stored without `!`.** The `!` is invocation syntax, not the name. `"restartapp": ["docker restart myapp"]` is readable and manually editable. `"!restartapp"` is noisier.
+
+**Normalised to lowercase.** `!RestartApp` and `!restartapp` are the same shortcut. Normalised at storage time.
+
+**No confirmation on replay.** The user saved this intentionally. The confirmation gate exists for AI-generated suggestions because they're unknown — a saved shortcut is known by definition.
+
 ---
 
+## 🐛 Bugs — the ones worth documenting
+
+These are the non-obvious bugs in mang.sh's history that were instructive or affected real users.
+
+### Bug 1: The detached-thread telemetry silence (v2.3.0)
+
+**Symptom:** The JSONBin collection was empty. Every telemetry entry was silently lost. `!feedback test` (which uses the synchronous path) worked fine, making it look like a server-side issue.
+
+**Cause:** `submit_background()` returns a `JoinHandle<()>`. The calling code in `main.rs` dropped it immediately — it was never stored. In Rust, dropping a `JoinHandle` detaches the thread. When `main()` returns, the OS kills all detached threads, and the HTTP POST never completes.
+
+**The insidious part:** `!feedback test` uses `submit_sync()` — a blocking call. The sync path worked. The async path silently failed. These are different code paths with different failure modes.
+
+**Fix:** `Vec<JoinHandle<()>>` in `main()`, populated on every `submit_background()` call, drained at all four exit paths.
+
+**Lesson:** A dropped `JoinHandle` is not an error — Rust lets you do this deliberately. But an implicit drop that happens because you forgot to store the handle is a silent race condition. The `#[must_use]` attribute on `JoinHandle` produces a compiler warning if you discard it — but only if clippy is run with `-D warnings`.
+
+### Bug 2: The uninstall script stdin trap (v1.1.2)
+
+**Symptom:** Running `curl -fsSL https://mang.sh/uninstall | bash` always printed "Cancelled" regardless of user input.
+
+**Cause:** When a script runs via `curl | bash`, its stdin is the pipe (the script source). `read -r reply` reads from stdin — which is the pipe — returns EOF immediately when the script content is exhausted, and stores an empty string. The empty string triggers the `[Y/n]` default of "n" → "Cancelled".
+
+**Fix:** `read -r reply </dev/tty` — reads from the terminal directly, bypassing the pipe.
+
+**Why this is easy to miss:** In development, you test the script by running it directly (`bash uninstall.sh`). Stdin is the terminal. Everything works. The pipe-stdin issue only manifests when the script is piped from curl, exactly the production usage pattern.
+
+### Bug 3: Shell colour variable escaping (v2.3.4)
+
+**Symptom:** update.sh printed raw escape sequences: `[0;36m` instead of rendering cyan.
+
+**Root cause:**
+```bash
+CYN='[0;36m'   # WRONG: single quotes = literal characters, no escape processing
+CYN=$'[0;36m'  # CORRECT: ANSI-C quoting = ESC byte stored in variable
+```
+
+Single-quoted strings in bash are completely literal. No escape sequences are processed. The variable `CYN` contained the string `[0;36m` — ten ASCII characters — not an ESC byte followed by `[0;36m`.
+
+`$''` uses ANSI-C quoting, which processes `` as octal escape → ESC byte (0x1B) at assignment time.
+
+**Why subtle:** `echo -e '[0;36m'` renders correctly because `-e` processes escape sequences. But `printf "${CYN}text${RST}"` without `-e` does not re-process the variable content. The distinction between "the variable contains an escape sequence as text" vs "the variable IS the escape byte" is not obvious from syntax inspection.
+
+### Bug 4: Windows PS5 cargo stderr trap (v2.2.0)
+
+**Symptom:** The install.ps1 script terminated during `cargo build` with a PowerShell `TerminatingError` even though the build would have succeeded. First reported by Wayne.
+
+**Root cause:** Three settings in combination:
+1. `$ErrorActionPreference = "Stop"` — terminate on any error
+2. `2>&1` — redirect stderr to stdout
+3. `cargo` writes ALL progress to stderr
+
+Under `$ErrorActionPreference = "Stop"`, any object written to the error stream terminates the script. `2>&1` causes PowerShell to wrap stderr output in `ErrorRecord` objects. Every "Compiling foo v1.0.0" progress line from cargo became a terminating error.
+
+**Fix:** Remove all three. Drop `$ErrorActionPreference = "Stop"`, remove `2>&1`, check `$LASTEXITCODE` after the build.
+
+**The lesson:** `$ErrorActionPreference = "Stop"` is correct for scripts that only call PowerShell cmdlets. It fails for scripts that invoke native executables (cargo, git, npm, docker) that legitimately write to stderr during normal operation.
+
+### Bug 5: The config forward-compatibility trap (anticipated and prevented)
+
+**Not a shipped bug — a design decision that prevents one.**
+
+Every time a field is added to `Config`, existing users have a JSON config without that field. Without `#[serde(default)]`, `serde_json` fails to deserialise on the next update with "missing field" — breaking every existing installation.
+
+The fix: all fields annotated with `#[serde(default)]` from the start:
+
+```rust
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct Config {
+    #[serde(default)] pub api_key: String,
+    #[serde(default)] pub model: String,
+    #[serde(default)] pub backend: String,
+    #[serde(default)] pub telemetry_share_central: bool,
+    #[serde(default)] pub sessions_since_telemetry_prompt: u32,
+    // ... every field
+}
+```
+
+**The rule:** annotate config fields with `#[serde(default)]` at the point of addition. Retroactive annotation requires a re-release. If you ship without it, the next `!update` sends every existing user into a broken state with no automatic recovery path.
+
+---
+
+## 🤝 Building with Perplexity Computer
+
+mang.sh was designed and built entirely in collaboration with **[Perplexity Computer](https://www.perplexity.ai)** — from initial architecture through every feature, bug fix, and documentation pass.
+
+### What the collaboration looked like
+
+**Paul provided:**
+- Product judgment — what the tool should feel like, what features matter, when something is good enough
+- Domain knowledge — how CLI tools actually behave, what shell quirks exist, what users realistically do
+- Quality bar — what "done" means, when to push for more depth, when to ship
+- The bug reports — actual observed failures that drove fixes
+
+**Perplexity Computer provided:**
+- Implementation speed — a working Rust module in minutes rather than hours
+- Rust idiom knowledge — knowing `#[serde(default)]` exists, that `dirs` resolves config paths correctly, that `rustyline` is the right readline library, that `reqwest::blocking` is the right call for a CLI
+- Debugging breadth — holding the entire codebase in context when diagnosing a multi-file bug
+- Documentation completeness — writing this README in full
+
+**The result:** 13 versions from v1.0.0 to v3.0.3 in a matter of days. The code compiles, has zero clippy warnings, handles edge cases properly. The architecture decisions reflect real trade-offs between binary size, compile time, correctness, and maintainability.
+
+### What AI assistance actually looks like
+
+It looks like a very good senior engineer who responds instantly. You describe what you want — "add a background version check that doesn't block the startup prompt" — and you get back a full implementation: a thread, a rate-limiting file, a join handle stored in the right Vec, the UI message integrated into the REPL flow.
+
+Then you test it. You find edge cases: "what happens if the network is unavailable?" "What happens if the rate-limit file is corrupted?" You describe the gap. You get a fix.
+
+**What it does NOT look like:** blindly accepting every output. Every suggestion went through `cargo check`, `cargo clippy`, and manual review. The detached-thread telemetry bug was not caught by the AI — it was caught by noticing the JSONBin collection was empty after real use. The uninstall stdin bug was caught by a user report. AI-generated code must be compiled, run, and used.
+
+### Why this credit is in the README
+
+Because honesty about how software is built matters. Open-source lives and dies by trust. The architecture decisions are human. The product taste is human. The implementation was AI-assisted, and that assistance was substantial. Presenting this as entirely human-written would be a quiet lie.
+
+The model: AI as force multiplier. The human makes the meaningful decisions. The AI removes the mechanical barriers between intention and implementation.
+
+---
 ## 🔬 Lessons learned — building mang.sh from scratch
 
 This section documents real technical decisions, dead ends, and the reasoning behind them. It's meant to be genuinely useful if you're building something similar — not a highlight reel.

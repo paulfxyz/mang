@@ -31,9 +31,9 @@ Honesty about that is a feature, not a caveat.
 - `src/main.rs`: `!credits` / `!cr` handled before shortcut dispatch
 - `src/shortcuts.rs`: `!credits` / `!cr` excluded from named-shortcut parsing
 
-#### README: deep technical expansion
+#### README: major deep-dive expansion (690 → 948 lines)
 
-Significantly expanded documentation across:
+The README now serves as a comprehensive technical reference, inspired by the documentation depth of [mercury-sh](https://github.com/paulfxyz/mercury-sh). New content across:
 
 - **Architecture notes** — blocking REPL design rationale, rustyline usage,
   context window as a rolling buffer (not a log)
@@ -53,6 +53,16 @@ Significantly expanded documentation across:
   responsibility boundaries
 - **On telemetry** — fire-and-forget root cause analysis, `MANGDEBUG=1`
   design rationale, write-only key security model, opt-in vs opt-out
+- **Table of Contents** — 19-section navigation
+- **Architecture Deep Dive** — REPL design decisions, system prompt design
+  rationale, JSON parsing pipeline, shell detection matrix, wizard architecture,
+  `ShortcutStore` design
+- **Bugs worth documenting** — 5 named bugs with root cause analysis and lessons:
+  detached-thread telemetry silence, uninstall stdin trap, shell colour escaping,
+  Windows PS5 `cargo stderr` trap, config forward-compatibility design
+- **Building with Perplexity Computer** — honest account of the AI collaboration
+  model: what the AI provided, what the human provided, and why this credit
+  is in the README
 
 ---
 
