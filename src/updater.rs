@@ -1,6 +1,6 @@
 // =============================================================================
 //  updater.rs — Background update check & !update shortcut
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
@@ -16,7 +16,7 @@
 //  WHAT HAPPENS ON Y
 //  ──────────────────
 //  mang.sh shells out to:
-//    curl -fsSL https://raw.githubusercontent.com/paulfxyz/mang-sh/main/update.sh | bash
+//    curl -fsSL https://raw.githubusercontent.com/paulfxyz/mang/main/update.sh | bash
 //  on Unix, or the equivalent iwr/iex on Windows PowerShell.
 //  The update script rebuilds and replaces the binary in-place, then exits.
 //  mang.sh itself exits after launching the update so the user restarts fresh.
@@ -40,7 +40,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CHECK_INTERVAL_SECS: u64 = 86_400; // 24 hours
-const RAW_BASE: &str = "https://raw.githubusercontent.com/paulfxyz/mang-sh/main";
+const RAW_BASE: &str = "https://raw.githubusercontent.com/paulfxyz/mang/main";
 
 /// Result of an update check.
 #[derive(Debug)]
@@ -80,7 +80,7 @@ pub fn check_for_update(force: bool) -> UpdateStatus {
         Err(_) => return UpdateStatus::Unavailable,
     };
 
-    let resp = match client.get("https://raw.githubusercontent.com/paulfxyz/mang-sh/main/Cargo.toml").send() {
+    let resp = match client.get("https://raw.githubusercontent.com/paulfxyz/mang/main/Cargo.toml").send() {
         Ok(r) => r,
         Err(_) => return UpdateStatus::Unavailable,
     };
@@ -134,7 +134,7 @@ fn record_check_time() {
 fn last_check_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("mang.sh")
+        .join("mang")
         .join("last_update_check")
 }
 

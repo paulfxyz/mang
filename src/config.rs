@@ -151,7 +151,7 @@ impl Default for Config {
 ///   3. XDG_CONFIG_HOME could theoretically change between calls.
 fn config_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("mang.sh").join("config.json")
+    base.join("mang").join("config.json")
 }
 
 // =============================================================================
@@ -162,14 +162,62 @@ fn config_path() -> PathBuf {
 ///
 /// Returns `Config::default()` if the file does not exist (first-run).
 /// Propagates errors for corrupted/unreadable files — the caller exits.
+///
+/// MIGRATION (v3.0.4)
+/// ────────────────
+/// The package was renamed from `mang-sh` to `mang` in v3.0.4.  The `dirs`
+/// crate derives the config directory from the Cargo package name, so the
+/// directory moved from `~/.config/mang-sh/` to `~/.config/mang/`.
+///
+/// On first load we silently migrate the old directory to the new one if:
+///   (a) the new path doesn’t exist yet, AND
+///   (b) the old path does exist
+///
+/// This is a one-time, non-destructive operation — the old directory is
+/// left in place as a backup.  A failure here is non-fatal: the user just
+/// goes through first-run setup again.
 pub fn load() -> Result<Config, Box<dyn std::error::Error>> {
     let path = config_path();
+
+    // ── v3.0.4 migration: mang-sh/ → mang/ ───────────────────────────────────
+    if !path.exists() {
+        // Check if the old mang-sh config directory exists
+        let base = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let old_dir  = base.join("mang-sh");
+        let new_dir  = path.parent().map(|p| p.to_path_buf())
+                           .unwrap_or_else(|| base.join("mang"));
+
+        if old_dir.exists() && !new_dir.exists() {
+            // Silently migrate: copy the old directory to the new location.
+            // We use a recursive copy rather than rename so the old directory
+            // survives as a backup and the operation is safe to interrupt.
+            let _ = copy_dir_recursive(&old_dir, &new_dir);
+        }
+    }
+
     if !path.exists() {
         return Ok(Config::default());
     }
     let raw = fs::read_to_string(&path)?;
     let cfg: Config = serde_json::from_str(&raw)?;
     Ok(cfg)
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+/// Non-fatal helper used for the v3.0.4 config migration.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
 }
 
 // =============================================================================

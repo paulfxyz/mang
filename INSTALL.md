@@ -105,7 +105,7 @@ On first run, mang.sh asks for:
 
 Config saved to:
 - macOS: `~/Library/Application Support/mang-sh/config.json`
-- Linux: `~/.config/mang-sh/config.json`
+- Linux: `~/.config/mang/config.json`
 - Windows: `%APPDATA%\mang-sh\config.json`
 
 ---
@@ -156,8 +156,8 @@ sudo rm -f /usr/local/bin/yo
 rm -f ~/.local/bin/yo
 
 # Config (optional — contains your API key)
-rm -rf ~/.config/mang-sh
-rm -rf ~/Library/Application\ Support/mang-sh   # macOS
+rm -rf ~/.config/mang
+rm -rf ~/Library/Application\ Support/mang   # macOS
 
 # Legacy yo-rust config (if you used mang.sh before v3.0.0)
 rm -rf ~/.config/yo-rust

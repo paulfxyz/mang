@@ -10,9 +10,9 @@
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Powered by OpenRouter](https://img.shields.io/badge/Powered%20by-OpenRouter-6c47ff?style=for-the-badge)](https://openrouter.ai)
 [![Ollama](https://img.shields.io/badge/Supports-Ollama-black?style=for-the-badge)](https://ollama.ai)
-[![Version](https://img.shields.io/badge/Version-3.0.3-brightgreen?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-3.0.4-brightgreen?style=for-the-badge)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](https://github.com/paulfxyz/mang-sh/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](https://github.com/paulfxyz/mang/pulls)
 
 <a href="https://paulfleury.com/github/mang-sh.jpeg">
   <img src="https://paulfleury.com/github/mang-sh.jpeg" alt="The All Seeing Eye — domain monitor dashboard" width="700" />
@@ -43,7 +43,7 @@
   ║   ███████║██║  ██║                            ║
   ║   ╚══════╝╚═╝  ╚═╝                            ║
   ║                                               ║
-  ║   v3.0.3  ·  mang.sh  ·  github.com/paulfxyz  ║
+  ║   v3.0.4  ·  mang.sh  ·  github.com/paulfxyz  ║
   ╚═══════════════════════════════════════════════╝
 ```
 
@@ -328,7 +328,7 @@ yo ›  !restartapp
 | `!forget <name>` | Remove a shortcut |
 | `!shortcuts` | List all saved shortcuts |
 
-Persisted to `~/.config/mang-sh/shortcuts.json` across sessions.
+Persisted to `~/.config/mang/shortcuts.json` across sessions.
 
 ---
 
@@ -378,7 +378,7 @@ mang-sh/
 │   │                    suggest_commands() → Suggestion  |  suggest_raw() → String
 │   ├── prompt_wizard.rs Advanced Prompt Mode — 3-question Socratic dialogue
 │   │                    coach_prompt() → suggest_raw() → synthesise() → suggest_commands()
-│   ├── config.rs        Load/save ~/.config/mang-sh/config.json, interactive setup
+│   ├── config.rs        Load/save ~/.config/mang/config.json, interactive setup
 │   ├── shell.rs         ShellKind enum (8 variants), detection matrix, syntax hint
 │   ├── context.rs       ConversationContext — rolling window of N prior turns
 │   ├── history.rs       Shell history appending — zsh EXTENDED_HISTORY, bash, fish
@@ -573,7 +573,7 @@ pub struct ShortcutStore {
 }
 ```
 
-A flat `HashMap<String, Vec<String>>`. Serialised to `~/.config/mang-sh/shortcuts.json`. Three decisions:
+A flat `HashMap<String, Vec<String>>`. Serialised to `~/.config/mang/shortcuts.json`. Three decisions:
 
 **Names stored without `!`.** The `!` is invocation syntax, not the name. `"restartapp": ["docker restart myapp"]` is readable and manually editable. `"!restartapp"` is noisier.
 
@@ -770,7 +770,7 @@ A dropped `JoinHandle` silently detaches the thread. When `main()` returns, all 
 `reqwest::blocking` is synchronous, has a clean API, handles redirects and TLS, and doesn't require `tokio`. For a tool that makes one HTTP request per user turn — where the user is already staring at a "Thinking…" spinner — async adds compile overhead and binary size for zero UX benefit. Reserve `async`/`await` for servers and high-concurrency situations.
 
 **The `dirs` crate for config paths — always use it.**
-Hard-coding `~/.config/` breaks on macOS (Application Support), Windows (AppData\Roaming), and any system with a non-standard `$XDG_CONFIG_HOME`. The `dirs` crate resolves the OS-correct path automatically and uses the Cargo package name (`mang-sh`) as the subdirectory. Changing the package name in `Cargo.toml` automatically moves the config directory — seamless rebrand.
+Hard-coding `~/.config/` breaks on macOS (Application Support), Windows (AppData\Roaming), and any system with a non-standard `$XDG_CONFIG_HOME`. The `dirs` crate resolves the OS-correct path automatically and uses the Cargo package name (`mang`) as the subdirectory. Changing the package name in `Cargo.toml` automatically moves the config directory — seamless rebrand.
 
 **`regex::Regex` should be compiled once, not per call.**
 The intent detection patterns in `ai.rs` compile a `Regex` from a string on every `intent_is_api_change()` call. For a REPL that runs this on every input, this is a small but unnecessary allocation. Production pattern: use `once_cell::sync::Lazy<Regex>` or `regex::RegexSet` compiled at startup. The current implementation is correct and cheap enough at this scale — but worth knowing for higher-frequency applications.
@@ -850,7 +850,7 @@ mang.sh can optionally share anonymised data to improve the AI system prompt. Re
 | Model | `"openai/gpt-4o-mini"` |
 | OS + shell | `"macos"` + `"zsh"` |
 | Worked | `true` |
-| Version | `"v3.0.3"` |
+| Version | `"v3.0.4"` |
 | Timestamp | `"2026-03-23T12:00:00Z"` |
 
 **Never shared:** API keys, file paths, CWD, command output, username, hostname.
@@ -911,7 +911,7 @@ Get a key: **[openrouter.ai/keys](https://openrouter.ai/keys)**
 git checkout -b feat/your-feature
 git commit -m 'feat: describe your change'
 git push origin feat/your-feature
-# → open a Pull Request at github.com/paulfxyz/mang-sh
+# → open a Pull Request at github.com/paulfxyz/mang
 ```
 
 Ideas on the list:

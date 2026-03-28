@@ -1,6 +1,6 @@
 // =============================================================================
 //  telemetry.rs — Community data sharing via JSONBin.io
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  WHAT THIS MODULE DOES
 //  ─────────────────────
@@ -8,7 +8,7 @@
 //  "Did that work?" → Y) is POSTed as a private JSON entry to JSONBin.io.
 //
 //  Paul Fleury reviews the accumulated collection at:
-//    https://jsonbin.io → Collections → mang.sh-telemetry
+//    https://jsonbin.io → Collections → mang-telemetry
 //  and uses it to improve the AI system prompt and fix per-OS/shell issues.
 //
 //  ┌──────────────────────────────────────────┬────────────────────────────────┐
@@ -33,7 +33,7 @@
 //      Content-Type:    application/json
 //      X-Access-Key:    <write-only key>     — embedded in binary, safe to ship
 //      X-Bin-Private:   true                 — entries are private
-//      X-Bin-Name:      mang.sh-2026-03-22   — for easy dashboard filtering
+//      X-Bin-Name:      mang-2026-03-22   — for easy dashboard filtering
 //      X-Collection-Id: <collection id>      — groups all entries together
 //
 //  Each POST creates a NEW bin (document) — not appended to an existing one.
@@ -71,7 +71,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // ── Central collection credentials ───────────────────────────────────────────
 // Write-only Access Key: Bins Create permission only — safe to ship in binary.
-// Collection: mang-sh-telemetry (created 2026-03-22).
+// Collection: mang-telemetry (created 2026-03-22).
 // Master Key: kept private, never in source. Contact: hello@paulfleury.com
 pub const CENTRAL_ACCESS_KEY: &str    = "$2a$10$xJ5kER3PeMHMZKWRnJxhrehfH6wHeGURAhdmmctbLnboMhTXyJW9a";
 pub const CENTRAL_COLLECTION_ID: &str = "69c05e31b7ec241ddc91ee96";
@@ -115,7 +115,7 @@ pub struct TelemetryEntry {
     pub worked: Option<bool>,
 
     /// mang.sh version string, populated at compile time via env!().
-    pub mang_sh_version: &'static str,
+    pub mang_version: &'static str,
 
     /// ISO 8601 UTC timestamp, e.g. "2026-03-22T21:30:00Z".
     pub timestamp: String,
@@ -140,7 +140,7 @@ impl TelemetryEntry {
             arch:            std::env::consts::ARCH,
             shell:           shell.to_string(),
             worked,
-            mang_sh_version: env!("CARGO_PKG_VERSION"),
+            mang_version: env!("CARGO_PKG_VERSION"),
             timestamp:       iso8601_now(),
         }
     }
@@ -179,9 +179,9 @@ pub fn submit(
         eprintln!("[MANGDEBUG] payload:\n{json_body}");
     }
 
-    // Bin name: "mang.sh-2026-03-22" — used for dashboard filtering by date.
+    // Bin name: "mang-2026-03-22" — used for dashboard filtering by date.
     // Slicing [..10] is safe: iso8601_now() always produces at least 10 chars.
-    let bin_name = format!("mang.sh-{}", &entry.timestamp[..10]);
+    let bin_name = format!("mang-{}", &entry.timestamp[..10]);
 
     let mut posted_any = false;
 

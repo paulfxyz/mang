@@ -1,6 +1,6 @@
 # =============================================================================
 #  update.ps1 -- Update mang.sh to the latest version (Windows / PowerShell)
-#  https://github.com/paulfxyz/mang-sh
+#  https://github.com/paulfxyz/mang
 #
 #  Usage:
 #    iwr -useb https://mang.sh/update.ps1 | iex
@@ -17,14 +17,14 @@ function Write-Warn { param($msg) Write-Host "  [!!] $msg" -ForegroundColor Yell
 function Write-Fail {
     param($msg)
     Write-Host "  [!!] $msg" -ForegroundColor Red
-    Write-Host "  https://github.com/paulfxyz/mang-sh/issues" -ForegroundColor DarkGray
+    Write-Host "  https://github.com/paulfxyz/mang/issues" -ForegroundColor DarkGray
     Write-Host ""
     exit 1
 }
 
-$RAW_BASE = "https://raw.githubusercontent.com/paulfxyz/mang-sh/main"
-$ZIP_URL = "https://github.com/paulfxyz/mang-sh/archive/refs/heads/main.zip"
-$TMP_DIR  = Join-Path $env:TEMP ("mang-sh-update-" + [System.Guid]::NewGuid().ToString("N").Substring(0,8))
+$RAW_BASE = "https://raw.githubusercontent.com/paulfxyz/mang/main"
+$ZIP_URL = "https://github.com/paulfxyz/mang/archive/refs/heads/main.zip"
+$TMP_DIR  = Join-Path $env:TEMP ("mang-update-" + [System.Guid]::NewGuid().ToString("N").Substring(0,8))
 
 Write-Host ""
 Write-Host "  +==========================================+" -ForegroundColor Cyan
@@ -42,7 +42,7 @@ $YoBinPath = $null
 if ($YoBin) {
     $YoBinPath = $YoBin.Source
 } else {
-    $Default = Join-Path $env:LOCALAPPDATA "mang-sh\bin\yo.exe"
+    $Default = Join-Path $env:LOCALAPPDATA "mang\bin\yo.exe"
     if (Test-Path $Default) { $YoBinPath = $Default }
 }
 
@@ -96,7 +96,7 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 New-Item -ItemType Directory -Force -Path $TMP_DIR | Out-Null
 Write-Info "Downloading latest source..."
 
-$ZipDest = Join-Path $TMP_DIR "mang-sh.zip"
+$ZipDest = Join-Path $TMP_DIR "mang.zip"
 try {
     $WebClient = New-Object System.Net.WebClient
     $WebClient.DownloadFile($ZIP_URL, $ZipDest)
@@ -107,7 +107,7 @@ try {
 Expand-Archive -Path $ZipDest -DestinationPath $TMP_DIR -Force
 Remove-Item $ZipDest -Force -ErrorAction SilentlyContinue
 
-$SrcDir = Join-Path $TMP_DIR "mang-sh-main"
+$SrcDir = Join-Path $TMP_DIR "mang-main"
 if (-not (Test-Path $SrcDir)) {
     $SrcDir = (Get-ChildItem $TMP_DIR -Directory | Select-Object -First 1).FullName
 }

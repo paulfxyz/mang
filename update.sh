@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  update.sh -- Update mang.sh to the latest version
-#  https://github.com/paulfxyz/mang-sh
+#  https://github.com/paulfxyz/mang
 #
 #  Usage:
 #    curl -fsSL https://mang.sh/update.sh | bash
@@ -16,15 +16,15 @@
 #    4. Exits cleanly if already up to date (no unnecessary builds)
 #    5. Clones the latest source, builds a release binary
 #    6. Replaces the binary at its current install location
-#    7. Never touches your config (~/.config/mang-sh/config.json)
+#    7. Never touches your config (~/.config/mang/config.json)
 #
 #  Works with: v1.0.0 and later
 # =============================================================================
 
 set -euo pipefail
 
-REPO="https://github.com/paulfxyz/mang-sh"
-RAW="https://raw.githubusercontent.com/paulfxyz/mang-sh/main"
+REPO="https://github.com/paulfxyz/mang"
+RAW="https://raw.githubusercontent.com/paulfxyz/mang/main"
 TMP_DIR="$(mktemp -d)"
 SUDO=""
 
@@ -145,12 +145,12 @@ info "Rust: $(rustc --version)"
 #  Step 6 -- Clone and build
 # =============================================================================
 log "Cloning latest source..."
-git clone --depth 1 "$REPO" "$TMP_DIR/mang-sh" &>/dev/null
+git clone --depth 1 "$REPO" "$TMP_DIR/mang" &>/dev/null
 
 log "Building release binary..."
-(cd "$TMP_DIR/mang-sh" && cargo build --release --quiet 2>&1)
+(cd "$TMP_DIR/mang" && cargo build --release --quiet 2>&1)
 
-BINARY="$TMP_DIR/mang-sh/target/release/yo"
+BINARY="$TMP_DIR/mang/target/release/yo"
 [[ -f "$BINARY" ]] || die "Build failed -- binary not found. Please open an issue at $REPO/issues"
 ok "Build complete."
 

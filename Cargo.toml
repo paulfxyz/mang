@@ -1,11 +1,11 @@
 [package]
-name        = "mang-sh"
-version     = "3.0.3"
+name        = "mang"
+version     = "3.0.4"
 edition     = "2021"
 authors     = ["Paul Fleury <hello@paulfleury.com>"]
 description = "mang.sh — The spirit messenger. Natural language → terminal commands. Powered by Gou Mang (句芒)."
 license     = "MIT"
-repository  = "https://github.com/paulfxyz/mang-sh"
+repository  = "https://github.com/paulfxyz/mang"
 homepage    = "https://mang.sh"
 keywords    = ["cli", "ai", "shell", "terminal", "mang"]
 categories  = ["command-line-utilities"]

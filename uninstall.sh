@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  uninstall.sh -- Remove mang.sh from your system
-#  https://github.com/paulfxyz/mang-sh
+#  https://github.com/paulfxyz/mang
 #
 #  Usage (pipe-safe -- reads from /dev/tty, not stdin):
 #    curl -fsSL https://mang.sh/uninstall.sh | bash
@@ -130,14 +130,14 @@ CONFIG_DIR=""
 case "$(uname -s)" in
     Darwin)
         # macOS: dirs crate uses Application Support
-        MACOS_CFG="$HOME/Library/Application Support/mang-sh"
-        XDG_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/mang-sh"
+        MACOS_CFG="$HOME/Library/Application Support/mang"
+        XDG_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/mang"
         if   [[ -d "$MACOS_CFG" ]]; then CONFIG_DIR="$MACOS_CFG"
         elif [[ -d "$XDG_CFG"   ]]; then CONFIG_DIR="$XDG_CFG"
         fi
         ;;
     Linux|*)
-        CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mang-sh"
+        CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mang"
         ;;
 esac
 
@@ -176,6 +176,21 @@ case "$(uname -s)" in
         ;;
 esac
 
+# Also check for mang-sh (the name used before v3.0.4)
+case "$(uname -s)" in
+    Darwin)
+        YO_RUST_CONFIGS+=(
+            "$HOME/Library/Application Support/mang-sh"
+            "${XDG_CONFIG_HOME:-$HOME/.config}/mang-sh"
+        )
+        ;;
+    Linux|*)
+        YO_RUST_CONFIGS+=(
+            "${XDG_CONFIG_HOME:-$HOME/.config}/mang-sh"
+        )
+        ;;
+esac
+
 for LEGACY_CFG in "${YO_RUST_CONFIGS[@]}"; do
     if [[ -d "$LEGACY_CFG" ]]; then
         warn "Legacy yo-rust config found: $LEGACY_CFG"
@@ -200,24 +215,24 @@ done
 
 ALIASES_REMOVED=0
 for RC_FILE in "${RC_FILES[@]}"; do
-    if grep -qE "mang.sh aliases|yo-rust aliases" "$RC_FILE" 2>/dev/null; then
+    if grep -qE "mang aliases|yo-rust aliases" "$RC_FILE" 2>/dev/null; then
         # Write to a temp file then move -- avoids corrupt rc file on crash
         TMP_RC="$(mktemp)"
         grep -v \
-            -e "mang.sh aliases" \
+            -e "mang aliases" \
             -e "yo-rust aliases" \
             -e "alias hi='yo'" \
             -e "alias hello='yo'" \
             -e "alias yo=" \
             "$RC_FILE" > "$TMP_RC"
         mv "$TMP_RC" "$RC_FILE"
-        ok "Removed mang.sh aliases from $RC_FILE"
+        ok "Removed mang aliases from $RC_FILE"
         ALIASES_REMOVED=1
     fi
 done
 
 if [[ $ALIASES_REMOVED -eq 0 ]]; then
-    skip "No mang.sh aliases found in shell config files."
+    skip "No mang aliases found in shell config files."
 fi
 
 # =============================================================================

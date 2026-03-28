@@ -265,7 +265,7 @@ pub fn parse_shortcut_input(line: &str) -> ShortcutInput {
 /// Returns the path to the shortcuts JSON file.
 fn shortcuts_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("mang.sh").join("shortcuts.json")
+    base.join("mang").join("shortcuts.json")
 }
 
 /// Normalise and validate a shortcut name.

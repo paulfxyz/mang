@@ -1,6 +1,6 @@
 // =============================================================================
 //  ai.rs — AI backend integration (OpenRouter + Ollama)
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
@@ -304,7 +304,7 @@ fn suggest_openrouter(
         .post("https://openrouter.ai/api/v1/chat/completions")
         .header("Authorization",  format!("Bearer {}", cfg.api_key))
         .header("Content-Type",   "application/json")
-        .header("HTTP-Referer",   "https://github.com/paulfxyz/mang-sh")
+        .header("HTTP-Referer",   "https://github.com/paulfxyz/mang")
         .header("X-Title",        "mang.sh")
         .json(&body)
         .send()?;
@@ -523,7 +523,7 @@ fn suggest_raw_openrouter(
         .post("https://openrouter.ai/api/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", cfg.api_key))
         .header("Content-Type",  "application/json")
-        .header("HTTP-Referer",  "https://github.com/paulfxyz/mang-sh")
+        .header("HTTP-Referer",  "https://github.com/paulfxyz/mang")
         .header("X-Title",       "mang.sh")
         .json(&body)
         .send()?;

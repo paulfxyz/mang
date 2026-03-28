@@ -1,6 +1,6 @@
 // =============================================================================
 //  ui.rs — Terminal UI: banner, help, suggestion display, prompts
-//  https://mang.sh  |  github.com/paulfxyz/mang-sh
+//  https://mang.sh  |  github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
@@ -27,7 +27,7 @@ use colored::Colorize;
 
 /// Current version — single source of truth for the banner.
 /// Synced with Cargo.toml `version` field.
-const VERSION: &str = "v3.0.3";
+const VERSION: &str = "v3.0.4";
 
 // =============================================================================
 //  print_banner
@@ -375,15 +375,15 @@ pub fn print_help(cfg: &Config, dry_run: bool, history_enabled: bool, ctx_size: 
 
     // Config location
     println!("  {}", "CONFIG FILE".white().bold());
-    println!("    {}  {}", "macOS:  ".dimmed(), "~/Library/Application Support/mang-sh/config.json".yellow());
-    println!("    {}  {}", "Linux:  ".dimmed(), "~/.config/mang-sh/config.json".yellow());
-    println!("    {}  {}", "Windows:".dimmed(), "%APPDATA%\\mang-sh\\config.json".yellow());
+    println!("    {}  {}", "macOS:  ".dimmed(), "~/Library/Application Support/mang/config.json".yellow());
+    println!("    {}  {}", "Linux:  ".dimmed(), "~/.config/mang/config.json".yellow());
+    println!("    {}  {}", "Windows:".dimmed(), "%APPDATA%\\mang\\config.json".yellow());
     println!("    {}", "Plain JSON — editable manually if needed.".dimmed());
     println!();
 
     // Footer
     println!(
-        "  {}  {}  {}  mang.sh  ·  github.com/paulfxyz/mang-sh",
+        "  {}  {}  {}  mang.sh  ·  github.com/paulfxyz/mang",
         "句芒".cyan(),
         VERSION.dimmed(),
         "·".dimmed()
@@ -490,7 +490,7 @@ pub fn print_credits() {
     println!(
         "    {}  {}",
         "Source:  ".dimmed(),
-        "github.com/paulfxyz/mang-sh".cyan()
+        "github.com/paulfxyz/mang".cyan()
     );
     println!(
         "    {}  {}",
@@ -545,7 +545,7 @@ pub fn print_credits() {
 
     // ── Footer ────────────────────────────────────────────────────────────
     println!(
-        "  {}  {}  {}  mang.sh  ·  github.com/paulfxyz/mang-sh",
+        "  {}  {}  {}  mang.sh  ·  github.com/paulfxyz/mang",
         "句芒".cyan(),
         VERSION.dimmed(),
         "·".dimmed()

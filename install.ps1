@@ -1,6 +1,6 @@
 # =============================================================================
 #  install.ps1 -- Install mang.sh on Windows (PowerShell 5.1+ / PowerShell 7+)
-#  https://github.com/paulfxyz/mang-sh
+#  https://github.com/paulfxyz/mang
 #
 #  Usage -- paste this into any PowerShell window:
 #    iwr -useb https://mang.sh/install.ps1 | iex
@@ -45,7 +45,7 @@ function Write-Fail   {
     Write-Host "  [!!] $msg" -ForegroundColor Red
     Write-Host "" 
     Write-Host "  If this keeps happening, please open an issue:" -ForegroundColor DarkGray
-    Write-Host "  https://github.com/paulfxyz/mang-sh/issues" -ForegroundColor DarkGray
+    Write-Host "  https://github.com/paulfxyz/mang/issues" -ForegroundColor DarkGray
     Write-Host ""
     # Use exit with a non-zero code so callers can detect failure.
     # We cannot use "throw" here because we are running inside | iex which
@@ -68,11 +68,11 @@ function Invoke-Native {
 }
 
 # -- Constants ----------------------------------------------------------------
-$REPO_URL = "https://github.com/paulfxyz/mang-sh"
-$RAW_BASE = "https://raw.githubusercontent.com/paulfxyz/mang-sh/main"
-$ZIP_URL = "https://github.com/paulfxyz/mang-sh/archive/refs/heads/main.zip"
-$INSTALL_DIR = Join-Path $env:LOCALAPPDATA "mang-sh\bin"
-$TMP_DIR   = Join-Path $env:TEMP ("mang-sh-install-" + [System.Guid]::NewGuid().ToString("N").Substring(0,8))
+$REPO_URL = "https://github.com/paulfxyz/mang"
+$RAW_BASE = "https://raw.githubusercontent.com/paulfxyz/mang/main"
+$ZIP_URL = "https://github.com/paulfxyz/mang/archive/refs/heads/main.zip"
+$INSTALL_DIR = Join-Path $env:LOCALAPPDATA "mang\bin"
+$TMP_DIR   = Join-Path $env:TEMP ("mang-install-" + [System.Guid]::NewGuid().ToString("N").Substring(0,8))
 
 # Ensure tmp dir is cleaned up on exit (success or failure)
 # We register a cleanup action that runs when the script exits
@@ -172,7 +172,7 @@ if (-not $CargoCmd) {
 Write-Info "Downloading mang.sh source..."
 New-Item -ItemType Directory -Force -Path $TMP_DIR | Out-Null
 
-$ZipDest = Join-Path $TMP_DIR "mang-sh.zip"
+$ZipDest = Join-Path $TMP_DIR "mang.zip"
 try {
     # Use .NET WebClient for reliable binary download on PS5
     # Invoke-WebRequest -OutFile can fail silently on slow connections in PS5
@@ -193,8 +193,8 @@ try {
 }
 Remove-Item $ZipDest -Force -ErrorAction SilentlyContinue
 
-# The ZIP extracts to a folder named mang-sh-main
-$SrcDir = Join-Path $TMP_DIR "mang-sh-main"
+# The ZIP extracts to a folder named mang-main
+$SrcDir = Join-Path $TMP_DIR "mang-main"
 if (-not (Test-Path $SrcDir)) {
     # Fallback: find any subdirectory (in case GitHub changes the ZIP structure)
     $Found = Get-ChildItem $TMP_DIR -Directory | Select-Object -First 1
@@ -270,7 +270,7 @@ Set-Alias -Name hello -Value $TargetPath -Option AllScope -Scope Global -ErrorAc
 
 $AliasLines = @"
 
-# mang.sh aliases -- added by install.ps1
+# mang aliases -- added by install.ps1
 Set-Alias -Name yo    -Value "$TargetPath" -Option AllScope -Scope Global
 Set-Alias -Name hi    -Value "$TargetPath" -Option AllScope -Scope Global
 Set-Alias -Name hello -Value "$TargetPath" -Option AllScope -Scope Global
@@ -286,7 +286,7 @@ if ($PROFILE) {
     }
 
     $ProfileContent = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
-    if (-not ($ProfileContent -like "*mang.sh aliases*")) {
+    if (-not ($ProfileContent -like "*mang aliases*")) {
         Add-Content -Path $PROFILE -Value $AliasLines
         Write-OK "Aliases added to $PROFILE  (yo / hi / hello)"
     } else {

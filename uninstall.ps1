@@ -1,6 +1,6 @@
 # =============================================================================
 #  uninstall.ps1 -- Remove mang.sh from Windows (PowerShell)
-#  https://github.com/paulfxyz/mang-sh
+#  https://github.com/paulfxyz/mang
 #
 #  Usage:
 #    iwr -useb https://mang.sh/uninstall.ps1 | iex
@@ -10,7 +10,7 @@
 #    - mang.sh directory from LOCALAPPDATA (if default install location)
 #    - The install directory from $env:PATH (user PATH entry)
 #    - yo / hi / hello aliases from $PROFILE
-#    - Config directory (%APPDATA%\mang-sh) -- ASKS before deleting
+#    - Config directory (%APPDATA%\mang) -- ASKS before deleting
 #
 #  What it keeps:
 #    - Rust / rustup (you may use it for other projects)
@@ -60,7 +60,7 @@ $YoBinPath = $null
 if ($YoBin) {
     $YoBinPath = $YoBin.Source
 } else {
-    $DefaultPath = Join-Path $env:LOCALAPPDATA "mang-sh\bin\yo.exe"
+    $DefaultPath = Join-Path $env:LOCALAPPDATA "mang\bin\yo.exe"
     if (Test-Path $DefaultPath) { $YoBinPath = $DefaultPath }
 }
 
@@ -70,7 +70,7 @@ if ($YoBinPath -and (Test-Path $YoBinPath)) {
     Log-OK "Removed binary: $YoBinPath"
 
     # Remove the empty install directory if it was our default location
-    $DefaultInstallDir = Join-Path $env:LOCALAPPDATA "mang-sh\bin"
+    $DefaultInstallDir = Join-Path $env:LOCALAPPDATA "mang\bin"
     if ($InstallDir -eq $DefaultInstallDir) {
         Remove-Item (Join-Path $env:LOCALAPPDATA "mang.sh") -Recurse -Force -ErrorAction SilentlyContinue
         Log-OK "Removed install directory: $(Join-Path $env:LOCALAPPDATA 'mang.sh')"
@@ -109,13 +109,13 @@ if (Test-Path $ConfigDir) {
 Write-Host ""
 if ($PROFILE -and (Test-Path $PROFILE)) {
     $Content = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
-    if ($Content -like "*mang.sh aliases*") {
+    if ($Content -like "*mang aliases*") {
         # Remove the alias block — everything between the comment and end of aliases
-        $Cleaned = $Content -replace '(?ms)\r?\n# mang.sh aliases.*?Set-Alias -Name hello.*?\r?\n', "`n"
+        $Cleaned = $Content -replace '(?ms)\r?\n# mang aliases.*?Set-Alias -Name hello.*?\r?\n', "`n"
         Set-Content $PROFILE $Cleaned.TrimEnd() -NoNewline
-        Log-OK "Removed mang.sh aliases from $PROFILE"
+        Log-OK "Removed mang aliases from $PROFILE"
     } else {
-        Log-Skip "No mang.sh aliases found in $PROFILE"
+        Log-Skip "No mang aliases found in $PROFILE"
     }
 } else {
     Log-Skip "No PowerShell profile found."

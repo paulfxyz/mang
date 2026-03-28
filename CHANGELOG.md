@@ -4,6 +4,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ---
 
+## [3.0.4] — 2026-03-28
+
+### Changed — Repository rename: `mang-sh` → `mang`
+
+This release renames everything from `mang-sh` to `mang`.
+
+**What changed:**
+- GitHub repository: `paulfxyz/mang-sh` → `paulfxyz/mang`
+  (old URL redirects automatically via GitHub's permanent redirect)
+- Cargo package name: `mang-sh` → `mang`
+- Config directory: `~/.config/mang-sh/` → `~/.config/mang/`
+  (macOS: `~/Library/Application Support/mang-sh/` → `.../mang/`)
+- Windows install directory: `%LOCALAPPDATA%\mang-sh\bin` → `%LOCALAPPDATA%\mang\bin`
+- Shell alias marker: `# mang-sh aliases` → `# mang aliases`
+- All installer scripts, scripts, source headers updated
+
+**What did NOT change:**
+- The binary name is still `yo` — `yo`, `hi`, `hello` all work
+- The website URL is still `https://mang.sh`
+- Install command is still `curl -fsSL https://mang.sh/install | bash`
+- All features, shortcuts, AI backends, telemetry — unchanged
+
+**Existing users — automatic migration:**
+On first launch after updating, `config.rs` silently copies
+`~/.config/mang-sh/` to `~/.config/mang/` if the new directory doesn't
+exist yet.  Your API key, model choice, shortcuts, and telemetry settings
+are preserved.  The old directory is kept as a backup.
+
+---
+
 ## [3.0.3] — 2026-03-25
 
 ### Added

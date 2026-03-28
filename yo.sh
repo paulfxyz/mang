@@ -25,8 +25,8 @@
 
 set -euo pipefail
 
-REPO="https://github.com/paulfxyz/mang-sh"
-RAW="https://raw.githubusercontent.com/paulfxyz/mang-sh/main"
+REPO="https://github.com/paulfxyz/mang"
+RAW="https://raw.githubusercontent.com/paulfxyz/mang/main"
 BIN_NAME="yo"
 TMP_DIR="$(mktemp -d)"
 INSTALL_DIR=""
@@ -102,12 +102,12 @@ fi
 #  Step 3 -- Clone and build
 # =============================================================================
 log "Cloning mang.sh source..."
-git clone --depth 1 "$REPO" "$TMP_DIR/mang-sh" &>/dev/null
+git clone --depth 1 "$REPO" "$TMP_DIR/mang" &>/dev/null
 
 log "Building release binary (~30 s on first build, faster after)..."
-(cd "$TMP_DIR/mang-sh" && cargo build --release --quiet 2>&1)
+(cd "$TMP_DIR/mang" && cargo build --release --quiet 2>&1)
 
-BINARY="$TMP_DIR/mang-sh/target/release/yo"
+BINARY="$TMP_DIR/mang/target/release/yo"
 [[ -f "$BINARY" ]] || die "Build failed — binary not found. Please open an issue: $REPO/issues"
 ok "Build complete."
 
@@ -149,8 +149,8 @@ case "$SHELL" in
 esac
 
 if [[ -n "$SHELL_RC" ]]; then
-    if ! grep -q "mang.sh aliases" "$SHELL_RC" 2>/dev/null; then
-        printf "\n# mang.sh aliases -- added by installer\nalias hi='yo'\nalias hello='yo'\n" >> "$SHELL_RC"
+    if ! grep -q "mang aliases" "$SHELL_RC" 2>/dev/null; then
+        printf "\n# mang aliases -- added by installer\nalias hi='yo'\nalias hello='yo'\n" >> "$SHELL_RC"
         ok "Aliases added to $SHELL_RC  (hi / hello -> yo)"
     else
         ok "Aliases already present in $SHELL_RC"
