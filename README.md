@@ -944,7 +944,7 @@ I want to be upfront about something.
 
 I am not a software engineer. I'm not a coder in the traditional sense, and I make no claim to being one. I'm a former hacker turned entrepreneur — someone who spent a decade in intelligence, then pivoted to building things on the internet, and who has always been more comfortable with a terminal than a corporate job.
 
-This entire project — every line of Rust, every shell script, every installer, every i18n translation, every word of this README — was built through **vibe coding**: a continuous, conversational collaboration with AI tools, primarily **[Claude](https://claude.ai)** and **[Perplexity](https://www.perplexity.ai)** (in particular, with agentic tasks through Perplexity Computer). I described what I wanted. I pushed back when something was wrong. I had opinions about architecture, UX, naming, tone. The AI handled the implementation.
+This entire project — every line of Rust, every shell script, every installer, every i18n translation, every word of this README — was built through **vibe coding**: a continuous, conversational collaboration with AI tools, primarily **[Claude](https://claude.ai)** and **[Perplexity](https://www.perplexity.ai)** (in particular, with agentic tasks through Perplexity Computer). I described what I wanted. I pushed back when something was wrong. I had opinions about architecture, UX, naming, tone; sometimes a more technical comment about a stack, an approach or a sequence of code. The AI handled the implementation.
 
 The ideas are mine. The judgment calls are mine. The product instincts are mine. The code was written by AI under my direction.
 
