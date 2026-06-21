@@ -305,6 +305,22 @@ fn main() {
                     }
                     updater::UpdateStatus::Unavailable => {
                         println!("{}", "  ◈  Could not reach GitHub — check your connection.".yellow());
+                        // Show the manual fallback command so the user is never stuck
+                        println!(
+                            "  {}  {}",
+                            "◈".dimmed(),
+                            "Manual update:".dimmed()
+                        );
+                        println!(
+                            "  {}  {}",
+                            " ".dimmed(),
+                            "curl -fsSL https://mang.sh/update | bash".cyan().bold()
+                        );
+                        println!(
+                            "  {}  {}",
+                            " ".dimmed(),
+                            "Windows: iwr -useb https://mang.sh/update.ps1 | iex".cyan()
+                        );
                     }
                 }
                 println!();

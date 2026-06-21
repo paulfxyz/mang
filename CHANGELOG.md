@@ -4,6 +4,39 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ---
 
+## [3.0.5] — 2026-06-21
+
+### Fixed — HTTPS connection failures (TLS)
+
+**Symptom:** Every AI request failed with `error sending request for url (https://openrouter.ai/...)` immediately after startup, even with a valid API key. The `!update` check also failed with "Could not reach GitHub — check your connection." No HTTP status code was returned, meaning the connection was dying at the TCP/TLS layer before any HTTP exchange.
+
+**Root cause:** `reqwest = { version = "0.12", features = ["blocking", "json"] }` — in reqwest 0.12, **no TLS backend is compiled in by default**. The dependency tree happened to pull in `native-tls` (which links against the system OpenSSL) transitively, but this is unreliable: on macOS Sequoia and some Linux distributions the system OpenSSL version or CA bundle path causes silent TLS handshake failures.
+
+**Fix:** Explicitly add `rustls-tls` as a feature and set `default-features = false`:
+
+```toml
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+```
+
+`rustls` is a pure-Rust TLS implementation that is **statically linked** into the binary. It has no dependency on system TLS libraries, OpenSSL versions, or CA bundle paths — it ships its own root certificate store (`webpki-roots`). The binary works identically on every platform.
+
+**Lesson:** In reqwest 0.12+, never rely on transitive TLS features. Always declare your TLS backend explicitly. `rustls-tls` is the safer default for distributed binaries; `native-tls` is fine for server-side code where you control the OS.
+
+### Added — Manual update fallback shown on `!update` failure
+
+When `!update` (or the background update check) can't reach GitHub, the app now prints the manual curl command directly in the REPL so the user is never left stranded:
+
+```
+◈  Could not reach GitHub — check your connection.
+◈  Manual update:
+   curl -fsSL https://mang.sh/update | bash
+   Windows: iwr -useb https://mang.sh/update.ps1 | iex
+```
+
+Also added a "If `!update` fails" section to `INSTALL.md` and a troubleshooting table entry to the `README`.
+
+---
+
 ## [3.0.4] — 2026-03-28
 
 ### Changed — Repository rename: `mang-sh` → `mang`

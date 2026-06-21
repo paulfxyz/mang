@@ -138,6 +138,22 @@ Or from within mang.sh: `!update`
 
 Detects installed version, checks latest, skips if current, replaces binary in-place. Config never touched.
 
+#### If `!update` fails ("Could not reach GitHub")
+
+`!update` uses the same network stack as the AI backend. If both are failing, it's a TLS/network issue with the installed binary — the most common cause is running a pre-v3.0.5 build (which used system OpenSSL instead of the bundled rustls).
+
+Run the manual update command directly in your terminal:
+
+```bash
+# macOS / Linux / Git Bash
+curl -fsSL https://mang.sh/update | bash
+
+# Windows PowerShell
+iwr -useb https://mang.sh/update.ps1 | iex
+```
+
+This downloads and rebuilds from source, which will pick up the TLS fix. After the update, `!update` and all AI requests will work again.
+
 ---
 
 ## Uninstall

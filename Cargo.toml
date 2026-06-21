@@ -1,6 +1,6 @@
 [package]
 name        = "mang"
-version     = "3.0.4"
+version     = "3.0.5"
 edition     = "2021"
 authors     = ["Paul Fleury <hello@paulfleury.com>"]
 description = "mang.sh — The spirit messenger. Natural language → terminal commands. Powered by Gou Mang (句芒)."
@@ -24,7 +24,12 @@ path = "src/main.rs"
 # turn with several seconds of human think-time between turns.  Adding an async
 # runtime (tokio) would triple compile time and binary size for zero benefit.
 # `json` feature: enables `.json(&body)` / `.json::<T>()` on request/response.
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+# reqwest 0.12 dropped the default TLS backend — without an explicit TLS
+# feature the binary silently fails to make HTTPS connections on many systems.
+# We use rustls-tls (pure Rust, statically linked) rather than native-tls
+# (links against the system OpenSSL) so the binary works everywhere with
+# no dependency on system TLS libraries, CA bundle paths, or OpenSSL versions.
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 
 # serde + serde_json — compile-time serialization derive macros.
 # Used for:

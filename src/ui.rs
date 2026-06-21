@@ -27,7 +27,7 @@ use colored::Colorize;
 
 /// Current version — single source of truth for the banner.
 /// Synced with Cargo.toml `version` field.
-const VERSION: &str = "v3.0.4";
+const VERSION: &str = "v3.0.5";
 
 // =============================================================================
 //  print_banner
