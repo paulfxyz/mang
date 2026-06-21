@@ -138,6 +138,21 @@ Or from within mang.sh: `!update`
 
 Detects installed version, checks latest, skips if current, replaces binary in-place. Config never touched.
 
+#### Little Snitch / Lulu blocking `yo`
+
+If DNS resolves and `curl` hits OpenRouter fine but `yo` still fails with "error sending request", your firewall is blocking the binary. Little Snitch and Lulu silently block newly compiled binaries with no visible prompt.
+
+**Fix:**
+- **Little Snitch** — open Little Snitch, find the denied rule for `yo`, allow outbound on port 443
+- **Lulu** — check the Lulu menu bar icon for a pending or denied rule for `yo`
+- **macOS built-in firewall** — run:
+  ```bash
+  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add ~/.local/bin/yo
+  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp ~/.local/bin/yo
+  ```
+
+This happens every time `yo` is recompiled (e.g. after `!update`) because macOS treats the new binary as an unknown app.
+
 #### If `!update` fails ("Could not reach GitHub")
 
 `!update` uses the same network stack as the AI backend. If both are failing, it's a TLS/network issue with the installed binary — the most common cause is running a pre-v3.0.5 build (which used system OpenSSL instead of the bundled rustls).
