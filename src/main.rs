@@ -491,7 +491,9 @@ fn main() {
 
         let suggestion = match ai::suggest_commands(&cfg, &conversation, &line) {
             Err(e)  => {
-                eprintln!("{}", format!("  ✗  AI request failed: {e}").red());
+                // Use the smart error printer that gives actionable diagnostics
+                // for connection-level failures (firewall, VPN, proxy, etc.)
+                ui::print_network_error(&e.to_string());
                 continue;
             }
             Ok(s) => s,

@@ -4,6 +4,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ---
 
+## [3.0.6] — 2026-06-21
+
+### Improved — Smart network error diagnostics
+
+When an AI request fails with `error sending request` (connection-level failure, no HTTP status), mang now prints actionable diagnostics instead of the bare error string:
+
+```
+✗  AI request failed: error sending request for url (...)
+
+⚠  Connection failed before reaching the server. Common causes:
+
+1.  Firewall / Little Snitch blocking — check if 'yo' is allowed outbound on port 443
+2.  VPN / proxy intercepting TLS — try disabling VPN temporarily
+3.  macOS privacy prompt dismissed — System Settings → Privacy & Security → check for blocked apps
+4.  DNS not resolving openrouter.ai — try: dig openrouter.ai
+
+◈  Test with: curl -s https://openrouter.ai/api/v1/auth/key -H 'Authorization: Bearer $YOUR_KEY'
+```
+
+This covers the most common causes of "error sending request" that persist even after the v3.0.5 TLS fix: firewall rules blocking unsigned binaries (Little Snitch, Lulu, macOS built-in firewall), VPN/proxy intercepting TLS, and macOS network privacy prompts.
+
+---
+
 ## [3.0.5] — 2026-06-21
 
 ### Fixed — HTTPS connection failures (TLS)

@@ -27,7 +27,7 @@ use colored::Colorize;
 
 /// Current version — single source of truth for the banner.
 /// Synced with Cargo.toml `version` field.
-const VERSION: &str = "v3.0.5";
+const VERSION: &str = "v3.0.6";
 
 // =============================================================================
 //  print_banner
@@ -387,6 +387,62 @@ pub fn print_help(cfg: &Config, dry_run: bool, history_enabled: bool, ctx_size: 
         "句芒".cyan(),
         VERSION.dimmed(),
         "·".dimmed()
+    );
+    println!();
+}
+
+// =============================================================================
+//  print_network_error
+//
+//  Called when an AI request fails with a connection-level error (no HTTP
+//  status code returned).  Prints actionable diagnostics based on the
+//  error string, covering the most common causes on macOS and Linux.
+// =============================================================================
+pub fn print_network_error(err: &str) {
+    eprintln!("{}", format!("  ✗  AI request failed: {err}").red());
+
+    // Only show extended diagnostics for connection-level failures
+    // (no HTTP status code — failure before any exchange)
+    if !err.contains("error sending request") && !err.contains("connection") {
+        return;
+    }
+
+    println!();
+    println!(
+        "  {}  {}",
+        "⚠".yellow().bold(),
+        "Connection failed before reaching the server. Common causes:".yellow()
+    );
+    println!();
+    println!(
+        "  {}  {} {}",
+        "1.".dimmed(),
+        "Firewall / Little Snitch blocking".white().bold(),
+        "— check if 'yo' is allowed outbound on port 443".dimmed()
+    );
+    println!(
+        "  {}  {} {}",
+        "2.".dimmed(),
+        "VPN / proxy intercepting TLS".white().bold(),
+        "— try disabling VPN temporarily".dimmed()
+    );
+    println!(
+        "  {}  {} {}",
+        "3.".dimmed(),
+        "macOS privacy prompt dismissed".white().bold(),
+        "— System Settings → Privacy & Security → check for blocked apps".dimmed()
+    );
+    println!(
+        "  {}  {} {}",
+        "4.".dimmed(),
+        "DNS not resolving openrouter.ai".white().bold(),
+        "— try: dig openrouter.ai".dimmed()
+    );
+    println!();
+    println!(
+        "  {}  {}",
+        "◈".dimmed(),
+        format!("Test with: curl -s https://openrouter.ai/api/v1/auth/key -H 'Authorization: Bearer $YOUR_KEY'").cyan()
     );
     println!();
 }

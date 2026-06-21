@@ -10,7 +10,7 @@
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Powered by OpenRouter](https://img.shields.io/badge/Powered%20by-OpenRouter-6c47ff?style=for-the-badge)](https://openrouter.ai)
 [![Ollama](https://img.shields.io/badge/Supports-Ollama-black?style=for-the-badge)](https://ollama.ai)
-[![Version](https://img.shields.io/badge/Version-3.0.5-brightgreen?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-3.0.6-brightgreen?style=for-the-badge)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](https://github.com/paulfxyz/mang/pulls)
 
@@ -43,7 +43,7 @@
   ║   ███████║██║  ██║                            ║
   ║   ╚══════╝╚═╝  ╚═╝                            ║
   ║                                               ║
-  ║   v3.0.5  ·  mang.sh  ·  github.com/paulfxyz  ║
+  ║   v3.0.6  ·  mang.sh  ·  github.com/paulfxyz  ║
   ╚═══════════════════════════════════════════════╝
 ```
 
@@ -850,7 +850,7 @@ mang.sh can optionally share anonymised data to improve the AI system prompt. Re
 | Model | `"openai/gpt-4o-mini"` |
 | OS + shell | `"macos"` + `"zsh"` |
 | Worked | `true` |
-| Version | `"v3.0.5"` |
+| Version | `"v3.0.6"` |
 | Timestamp | `"2026-03-23T12:00:00Z"` |
 
 **Never shared:** API keys, file paths, CWD, command output, username, hostname.
