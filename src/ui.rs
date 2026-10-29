@@ -27,7 +27,8 @@ use colored::Colorize;
 
 /// Current version — single source of truth for the banner.
 /// Synced with Cargo.toml `version` field.
-const VERSION: &str = "v3.0.6";
+/// Display version, derived from Cargo.toml so the two can never drift apart.
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 // =============================================================================
 //  print_banner
@@ -392,6 +393,28 @@ pub fn print_help(cfg: &Config, dry_run: bool, history_enabled: bool, ctx_size: 
 }
 
 // =============================================================================
+//  print_risk_warning (v3.0.7)
+//
+//  Shown by main.rs::confirm_run when safety::assess flags a suggestion.
+//  Lists the reasons and tells the user the default answer is now "No".
+// =============================================================================
+pub fn print_risk_warning(reasons: &[&str]) {
+    println!(
+        "  {}  {}",
+        "⚠".red().bold(),
+        "This looks risky — double-check before running:".red().bold()
+    );
+    for r in reasons {
+        println!("     {}  {}", "•".red(), r.yellow());
+    }
+    println!(
+        "  {}  {}",
+        "◈".dimmed(),
+        "Enter will cancel. Type y to run it anyway.".dimmed()
+    );
+}
+
+// =============================================================================
 //  print_network_error
 //
 //  Called when an AI request fails with a connection-level error (no HTTP
@@ -403,7 +426,12 @@ pub fn print_network_error(err: &str) {
 
     // Only show extended diagnostics for connection-level failures
     // (no HTTP status code — failure before any exchange)
-    if !err.contains("error sending request") && !err.contains("connection") {
+    // HTTP-level failures ("OpenRouter 401: …") already carry their own hint.
+    let lower = err.to_lowercase();
+    let connection_level = ["error sending request", "connection", "timed out", "dns error", "tcp connect"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if err.starts_with("OpenRouter ") || !connection_level {
         return;
     }
 
@@ -442,7 +470,7 @@ pub fn print_network_error(err: &str) {
     println!(
         "  {}  {}",
         "◈".dimmed(),
-        format!("Test with: curl -s https://openrouter.ai/api/v1/auth/key -H 'Authorization: Bearer $YOUR_KEY'").cyan()
+        "Test with: curl -s https://openrouter.ai/api/v1/auth/key -H 'Authorization: Bearer $YOUR_KEY'".cyan()
     );
     println!();
 }
@@ -526,7 +554,7 @@ pub fn print_credits() {
     println!(
         "    {}  {}",
         "Name:    ".dimmed(),
-        "mang.sh 句芒  (formerly yo-rust)".white().bold()
+        "mang.sh 句芒".white().bold()
     );
     println!(
         "    {}  {}",
@@ -623,7 +651,7 @@ pub fn print_suggestion(suggestion: &Suggestion, dry_run: bool) {
     let inner_w = suggestion
         .commands
         .iter()
-        .map(|c| c.len() + 7)
+        .map(|c| c.chars().count() + 7)
         .max()
         .unwrap_or(46)
         .max(46);
@@ -633,7 +661,7 @@ pub fn print_suggestion(suggestion: &Suggestion, dry_run: bool) {
     if dry_run {
         println!("  {}{}{}", "┌".yellow(), bar.yellow(), "┐".yellow());
         for cmd in &suggestion.commands {
-            let pad = inner_w.saturating_sub(cmd.len() + 5);
+            let pad = inner_w.saturating_sub(cmd.chars().count() + 5);
             println!(
                 "  {}  {}  {}{}{}",
                 "│".yellow(), "$".dimmed(),
@@ -645,7 +673,7 @@ pub fn print_suggestion(suggestion: &Suggestion, dry_run: bool) {
     } else {
         println!("  {}{}{}", "┌".cyan(), bar.cyan(), "┐".cyan());
         for cmd in &suggestion.commands {
-            let pad = inner_w.saturating_sub(cmd.len() + 5);
+            let pad = inner_w.saturating_sub(cmd.chars().count() + 5);
             println!(
                 "  {}  {}  {}{}{}",
                 "│".cyan(), "$".dimmed(),
@@ -708,7 +736,7 @@ pub fn print_context_summary(ctx: &ConversationContext) {
             format!("[{}]", i + 1).cyan().bold(),
             turn.prompt.white()
         );
-        println!("       {}  {}", "$".dimmed(), turn.commands_summary.dimmed());
+        println!("       {}  {}", "$".dimmed(), turn.summary().dimmed());
         println!();
     }
     println!(

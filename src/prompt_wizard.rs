@@ -89,7 +89,7 @@ pub enum WizardResult {
 /// * `cfg`          — current configuration (for AI backend calls)
 /// * `conversation` — current conversation context (passed through, not modified)
 /// * `original`     — the user's original vague prompt; empty string if the
-///                    wizard was invoked directly via `!prompt`
+///   wizard was invoked directly via `!prompt`
 ///
 /// # Returns
 /// `WizardResult::Prompt(s)` with the synthesised prompt on success, or

@@ -36,7 +36,7 @@
 //  MODULE GRAPH
 //  ────────────
 //  main ──► cli      (clap argument parsing: --dry, --no-history, --no-context)
-//       ──► config   (load/save ~/.config/mang-sh/config.json)
+//       ──► config   (load/save ~/.config/mang/config.json)
 //       ──► ai       (OpenRouter + Ollama HTTP calls, intent detection)
 //       ──► context  (rolling window of prior turns for follow-up support)
 //       ──► history  (append confirmed commands to shell history file)
@@ -73,6 +73,7 @@ mod context;
 mod feedback;
 mod history;
 mod prompt_wizard;
+mod safety;
 mod shell;
 mod shortcuts;
 mod telemetry;
@@ -84,6 +85,8 @@ use colored::Colorize;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::process;
+use std::sync::mpsc;
+use std::time::Duration;
 
 fn main() {
     // ── 1. Parse command-line arguments ───────────────────────────────────────
@@ -127,10 +130,17 @@ fn main() {
     // We use a background thread so startup latency is zero — the check completes
     // while the user is reading the banner and typing their first prompt.
     //
-    // Rate-limited to once per 24 hours (stored in ~/.config/mang-sh/last_update_check).
+    // Rate-limited to once per 24 hours (stored in ~/.config/mang/last_update_check).
     // The result is collected before the first REPL prompt is shown.
-    let update_check_handle = std::thread::spawn(|| {
-        updater::check_for_update(false)
+    //
+    // v3.0.7: the result travels over a channel and is polled, never joined.
+    // Previously `join()` blocked startup for up to the 6 s HTTP timeout
+    // whenever GitHub was unreachable (offline, VPN, a firewall prompt such as
+    // Little Snitch waiting for an answer) — on every launch.
+    let (update_tx, update_rx) = mpsc::channel::<updater::UpdateStatus>();
+    std::thread::spawn(move || {
+        // A send error just means the REPL already exited; nothing to do.
+        let _ = update_tx.send(updater::check_for_update(false));
     });
 
     // ── 6. Periodic telemetry reminder ─────────────────────────────────────────
@@ -178,20 +188,17 @@ fn main() {
     // --no-history flag overrides config.history_enabled for this session.
     let history_enabled = cfg.history_enabled && !args.no_history;
 
+    // Per-session switches handed to the shared helpers at the bottom of this file.
+    let opts = RunOpts { dry_run: args.dry_run, history_enabled };
+
     // ── 11. Usage hint ─────────────────────────────────────────────────────────
     ui::print_intro(&cfg, args.dry_run);
 
-    // ── 11b. Collect update check result and notify if available ──────────────
-    // Join the background thread (it has had plenty of time to complete while
-    // the user was reading the banner and the intro).
-    // We store the new version string so we can offer it via !update too.
-    let available_update: Option<String> = match update_check_handle.join() {
-        Ok(updater::UpdateStatus::UpdateAvailable(v)) => {
-            updater::print_update_notice(&v);
-            Some(v)
-        }
-        _ => None,
-    };
+    // ── 11b. Pick up the update check result ──────────────────────────────────
+    // Wait at most 400 ms so a fast check still announces itself before the
+    // first prompt; a slow or failed one is simply polled again each turn.
+    let mut available_update: Option<String> = None;
+    poll_update(&update_rx, Some(Duration::from_millis(400)), &mut available_update);
 
     // ── 12. Initialise line editor ─────────────────────────────────────────────
     // Provides arrow key editing, Ctrl-W word delete, in-session ↑/↓ history.
@@ -203,6 +210,9 @@ fn main() {
     // ── 13. Main REPL loop ─────────────────────────────────────────────────────
     loop {
         // ── 9a. Read input ────────────────────────────────────────────────────
+        // Announce a background update result that arrived since the last turn.
+        poll_update(&update_rx, None, &mut available_update);
+
         let context_indicator = if !conversation.is_empty() {
             format!(" [+{}]", conversation.len())
         } else {
@@ -355,60 +365,18 @@ fn main() {
             // We run the wizard with an empty "original" so it starts fresh and
             // asks a completely open first question.
             "!prompt" | "!p" => {
-                match prompt_wizard::run(&mut rl, &cfg, &conversation, "") {
-                    prompt_wizard::WizardResult::Prompt(refined) => {
-                        // Feed the synthesised prompt through the normal AI pipeline.
-                        println!("{}", "  ◌  Thinking…".dimmed());
-                        match ai::suggest_commands(&cfg, &conversation, &refined) {
-                            Err(e) => {
-                                eprintln!("{}", format!("  ✗  AI request failed: {e}").red());
-                            }
-                            Ok(s) if s.commands.is_empty() => {
-                                ui::print_empty_suggestion(&s);
-                                println!(
-                                    "  {}  {}",
-                                    "◈".yellow(),
-                                    "Still unclear — try rephrasing or use !prompt again.".dimmed()
-                                );
-                            }
-                            Ok(s) => {
-                                // Show the suggestion and full Y/N confirmation
-                                ui::print_suggestion(&s, args.dry_run);
-                                if !args.dry_run {
-                                    let run_it = loop {
-                                        let ans = match rl.readline(&format!("{} ", "  Run it? [Y/n] ›".yellow().bold())) {
-                                            Ok(a)  => a.trim().to_lowercase(),
-                                            Err(_) => "n".to_string(),
-                                        };
-                                        match ans.as_str() {
-                                            "y" | "yes" | "" => break true,
-                                            "n" | "no"       => break false,
-                                            _  => println!("{}", "  Please press Y or N.".yellow()),
-                                        }
-                                    };
-                                    if run_it {
-                                        let ok = execute_commands(&s.commands);
-                                        if ok {
-                                            conversation.push(&refined, &s.commands);
-                                            if history_enabled {
-                                                history::append_to_history(&s.commands);
-                                            }
-                                            println!("{}", "  ◈  Great! What else?".dimmed());
-                                        }
-                                    } else {
-                                        println!("{}", "  ◈  Skipped.".dimmed());
-                                    }
-                                } else {
-                                    // Dry-run: record in context so follow-ups work
-                                    conversation.push(&refined, &s.commands);
-                                }
-                            }
-                        }
-                    }
-                    prompt_wizard::WizardResult::Abandoned => {
-                        // User bailed — nothing to do, loop back to the prompt
-                    }
+                if let prompt_wizard::WizardResult::Prompt(refined) =
+                    prompt_wizard::run(&mut rl, &cfg, &conversation, "")
+                {
+                    // Feed the synthesised prompt through the normal pipeline:
+                    // AI → show → risk check → Y/N → execute → record.
+                    ask_and_run(&mut rl, &cfg, &mut conversation, opts, Ask {
+                    request: &refined, record_as: &refined,
+                    empty_hint: "Still unclear — try rephrasing or use !prompt again.",
+                    label: "Run it?",
+                });
                 }
+                // WizardResult::Abandoned → nothing to do, back to the prompt.
                 continue;
             }
 
@@ -424,12 +392,7 @@ fn main() {
             }
             shortcuts::ShortcutInput::Save(name) => {
                 // Save the most recently executed command set
-                if let Some(last_cmds) = conversation.turns().last().map(|t| {
-                    t.commands_summary
-                        .split(" ; ")
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                }) {
+                if let Some(last_cmds) = conversation.turns().last().map(|t| t.commands.clone()) {
                     match shortcut_store.save_shortcut(&name, &last_cmds) {
                         Ok(_) => {
                             println!("{}", format!("  ✔  Saved as !{name}  — type !{name} anytime to run instantly.", name=name).green());
@@ -459,6 +422,15 @@ fn main() {
                 if let Some(cmds) = shortcut_store.get(&name).cloned() {
                     println!("{}", format!("  ◈  Running shortcut !{name}", name=name).cyan());
                     println!();
+                    // Shortcuts skip the AI step, but a saved `rm -rf` is still
+                    // an `rm -rf`: risky ones get the same explicit confirmation.
+                    if !safety::assess(&cmds).is_empty()
+                        && !confirm_run(&mut rl, "Run shortcut?", &cmds)
+                    {
+                        println!("{}", "  ◈  Skipped.".dimmed());
+                        println!();
+                        continue;
+                    }
                     execute_commands(&cmds);
                     if history_enabled {
                         history::append_to_history(&cmds);
@@ -515,54 +487,14 @@ fn main() {
                 "Let's clarify your request with a few quick questions.".white()
             );
 
-            match prompt_wizard::run(&mut rl, &cfg, &conversation, &line) {
-                prompt_wizard::WizardResult::Prompt(refined) => {
-                    println!("{}", "  ◌  Thinking…".dimmed());
-                    match ai::suggest_commands(&cfg, &conversation, &refined) {
-                        Err(e) => eprintln!("{}", format!("  ✗  AI request failed: {e}").red()),
-                        Ok(s) if s.commands.is_empty() => {
-                            ui::print_empty_suggestion(&s);
-                            println!(
-                                "  {}  {}",
-                                "◈".yellow(),
-                                "Still couldn't find a command — try a completely different phrasing.".dimmed()
-                            );
-                        }
-                        Ok(s) => {
-                            // Wizard produced a valid suggestion — show it and
-                            // run the full Y/N → execute → history pipeline.
-                            ui::print_suggestion(&s, args.dry_run);
-                            if !args.dry_run {
-                                let run_it = loop {
-                                    let ans = match rl.readline(&format!("{} ", "  Run it? [Y/n] ›".yellow().bold())) {
-                                        Ok(a)  => a.trim().to_lowercase(),
-                                        Err(_) => "n".to_string(),
-                                    };
-                                    match ans.as_str() {
-                                        "y" | "yes" | "" => break true,
-                                        "n" | "no"       => break false,
-                                        _  => println!("{}", "  Please press Y or N.".yellow()),
-                                    }
-                                };
-                                if run_it {
-                                    let ok = execute_commands(&s.commands);
-                                    if ok {
-                                        conversation.push(&refined, &s.commands);
-                                        if history_enabled {
-                                            history::append_to_history(&s.commands);
-                                        }
-                                        println!("{}", "  ◈  Great! What else?".dimmed());
-                                    }
-                                } else {
-                                    println!("{}", "  ◈  Skipped.".dimmed());
-                                }
-                            } else {
-                                conversation.push(&refined, &s.commands);
-                            }
-                        }
-                    }
-                }
-                prompt_wizard::WizardResult::Abandoned => {}
+            if let prompt_wizard::WizardResult::Prompt(refined) =
+                prompt_wizard::run(&mut rl, &cfg, &conversation, &line)
+            {
+                ask_and_run(&mut rl, &cfg, &mut conversation, opts, Ask {
+                    request: &refined, record_as: &refined,
+                    empty_hint: "Still couldn't find a command — try a completely different phrasing.",
+                    label: "Run it?",
+                });
             }
 
             continue;
@@ -579,17 +511,7 @@ fn main() {
         }
 
         // ── 9f. Y/N confirmation ──────────────────────────────────────────────
-        let confirmed = loop {
-            let ans = match rl.readline(&format!("{} ", "  Run it? [Y/n] ›".yellow().bold())) {
-                Ok(a)  => a.trim().to_lowercase(),
-                Err(_) => "n".to_string(),
-            };
-            match ans.as_str() {
-                "y" | "yes" | "" => break true,
-                "n" | "no"       => break false,
-                _ => println!("{}", "  Please press Y or N.".yellow()),
-            }
-        };
+        let confirmed = confirm_run(&mut rl, "Run it?", &suggestion.commands);
 
         if !confirmed {
             // ── Refinement tunnel ─────────────────────────────────────────────
@@ -623,49 +545,15 @@ fn main() {
             // Build a context-aware refinement prompt so the AI knows
             // what the original suggestion was and what to change.
             let refinement_prompt = format!(
-                "Original request: {line}
-                 I suggested: {cmds}
-                 The user wants this changed: {refinement}
-                 Please provide an improved command.",
+                "Original request: {line}\nI suggested: {cmds}\nThe user wants this changed: {refinement}\nPlease provide an improved command.",
                 cmds = suggestion.commands.join(" && ")
             );
 
-            println!("{}", "  ◌  Thinking…".dimmed());
-
-            match ai::suggest_commands(&cfg, &conversation, &refinement_prompt) {
-                Err(e) => {
-                    eprintln!("{}", format!("  ✗  AI request failed: {e}").red());
-                }
-                Ok(refined) => {
-                    ui::print_suggestion(&refined, args.dry_run);
-
-                    let run_refined = loop {
-                        let ans = match rl.readline(&format!("{} ", "  Run it? [Y/n] ›".yellow().bold())) {
-                            Ok(a)  => a.trim().to_lowercase(),
-                            Err(_) => "n".to_string(),
-                        };
-                        match ans.as_str() {
-                            "y" | "yes" | "" => break true,
-                            "n" | "no"       => break false,
-                            _ => println!("{}", "  Please press Y or N.".yellow()),
-                        }
-                    };
-
-                    if run_refined {
-                        let all_ok = execute_commands(&refined.commands);
-                        if all_ok {
-                            conversation.push(&refinement_prompt, &refined.commands);
-                            if history_enabled {
-                                history::append_to_history(&refined.commands);
-                            }
-                        }
-                    } else {
-                        // User said N again — let them describe another change
-                        // by looping back to the top of the REPL naturally.
-                        println!("  {}  {}", "◈".dimmed(), "Tip: type your next request to keep refining, or describe a new task.".dimmed());
-                    }
-                }
-            }
+            ask_and_run(&mut rl, &cfg, &mut conversation, opts, Ask {
+                    request: &refinement_prompt, record_as: &line,
+                    empty_hint: "Couldn't improve on that — try describing the change differently.",
+                    label: "Run it?",
+                });
             continue;
         }
 
@@ -774,42 +662,154 @@ fn main() {
                 follow_up
             );
 
-            println!("{}", "  ◌  Thinking…".dimmed());
-
-            match ai::suggest_commands(&cfg, &conversation, &refinement_prompt) {
-                Err(e) => eprintln!("{}", format!("  ✗  AI request failed: {e}").red()),
-                Ok(refined) => {
-                    ui::print_suggestion(&refined, false);
-
-                    // Re-prompt for confirmation on the refined suggestion
-                    let confirmed2 = loop {
-                        let ans = match rl.readline(
-                            &format!("{} ", "  Run refined command? [Y/n] ›".yellow().bold()),
-                        ) {
-                            Ok(a)  => a.trim().to_lowercase(),
-                            Err(_) => "n".to_string(),
-                        };
-                        match ans.as_str() {
-                            "y" | "yes" | "" => break true,
-                            "n" | "no"       => break false,
-                            _ => println!("{}", "  Please press Y or N.".yellow()),
-                        }
-                    };
-
-                    if confirmed2 {
-                        execute_commands(&refined.commands);
-                        conversation.push(&refinement_prompt, &refined.commands);
-                        if history_enabled {
-                            history::append_to_history(&refined.commands);
-                        }
-                    } else {
-                        println!("{}", "  ◈  Skipped.".dimmed());
-                    }
-                }
-            }
+            ask_and_run(&mut rl, &cfg, &mut conversation, opts, Ask {
+                    request: &refinement_prompt, record_as: &line,
+                    empty_hint: "Couldn't find a better command — try describing the problem differently.",
+                    label: "Run refined command?",
+                });
         }
     }
     // REPL loop ends — Rust drops all heap allocations automatically.
+}
+
+// =============================================================================
+//  Shared REPL helpers (v3.0.7)
+//
+//  Before v3.0.7 the "show → ask Y/N → execute → record" sequence was copy-
+//  pasted five times in main().  The copies had already drifted apart (some
+//  recorded failed commands in the conversation context, some did not; the
+//  error wording differed).  One implementation means one place to get the
+//  safety behaviour right.
+// =============================================================================
+
+/// Session-wide switches that the helpers need.  `Copy` so it can be passed
+/// freely without borrow-checker gymnastics.
+#[derive(Clone, Copy)]
+struct RunOpts {
+    /// `--dry`: show suggestions but never execute.
+    dry_run: bool,
+    /// Whether confirmed commands are appended to the shell history file.
+    history_enabled: bool,
+}
+
+/// Poll the background update check.
+///
+/// * `wait = Some(d)` blocks for at most `d` (used once, at startup).
+/// * `wait = None` is a non-blocking peek (used every REPL turn).
+///
+/// When a newer version is reported it is announced once and remembered in
+/// `slot` so that `!update` can reuse it without another network call.
+fn poll_update(
+    rx:   &mpsc::Receiver<updater::UpdateStatus>,
+    wait: Option<Duration>,
+    slot: &mut Option<String>,
+) {
+    if slot.is_some() {
+        return; // already announced
+    }
+    let msg = match wait {
+        Some(d) => rx.recv_timeout(d).ok(),
+        None    => rx.try_recv().ok(),
+    };
+    if let Some(updater::UpdateStatus::UpdateAvailable(v)) = msg {
+        updater::print_update_notice(&v);
+        *slot = Some(v);
+    }
+}
+
+/// Ask the user whether to run `commands`.  Returns `true` to run.
+///
+/// SAFETY MODEL
+/// ────────────
+/// * Ordinary commands: `[Y/n]` — Enter accepts, because a confirmation that
+///   needs a typed answer for `ls` trains people to stop reading it.
+/// * Commands flagged by `safety::assess`: the reasons are printed and the
+///   prompt flips to `[y/N]` — Enter cancels, and only an explicit `y`/`yes`
+///   runs them.
+/// * EOF / Ctrl-C at the prompt always means "no".
+fn confirm_run(rl: &mut DefaultEditor, label: &str, commands: &[String]) -> bool {
+    let reasons = safety::assess(commands);
+    let risky = !reasons.is_empty();
+    if risky {
+        ui::print_risk_warning(&reasons);
+    }
+
+    let hint = if risky { "[y/N]" } else { "[Y/n]" };
+    loop {
+        let ans = match rl.readline(&format!("{} ", format!("  {label} {hint} ›").yellow().bold())) {
+            Ok(a)  => a.trim().to_lowercase(),
+            Err(_) => return false,
+        };
+        match ans.as_str() {
+            "y" | "yes"      => return true,
+            "n" | "no"       => return false,
+            "" if !risky     => return true,  // Enter accepts only safe commands
+            "" if risky      => return false, // …and declines risky ones
+            _                => println!("{}", "  Please press Y or N.".yellow()),
+        }
+    }
+}
+
+/// What to ask the AI and how to word the surrounding messages.
+struct Ask<'a> {
+    /// The text sent to the model.
+    request: &'a str,
+    /// The prompt stored in the conversation context on success (so follow-ups
+    /// like "now do it for staging" resolve correctly).
+    record_as: &'a str,
+    /// Shown when the model returns no commands.
+    empty_hint: &'a str,
+    /// Wording of the confirmation question.
+    label: &'a str,
+}
+
+/// Ask the AI, show the result, confirm and run it.
+fn ask_and_run(
+    rl:           &mut DefaultEditor,
+    cfg:          &config::Config,
+    conversation: &mut context::ConversationContext,
+    opts:         RunOpts,
+    ask:          Ask<'_>,
+) {
+    let Ask { request, record_as, empty_hint, label } = ask;
+    println!("{}", "  ◌  Thinking…".dimmed());
+
+    let suggestion = match ai::suggest_commands(cfg, conversation, request) {
+        Ok(s)  => s,
+        Err(e) => {
+            ui::print_network_error(&e.to_string());
+            return;
+        }
+    };
+
+    if suggestion.commands.is_empty() {
+        ui::print_empty_suggestion(&suggestion);
+        println!("  {}  {}", "◈".yellow(), empty_hint.dimmed());
+        return;
+    }
+
+    ui::print_suggestion(&suggestion, opts.dry_run);
+
+    if opts.dry_run {
+        // Nothing runs, but record the turn so follow-ups still work.
+        conversation.push(record_as, &suggestion.commands);
+        return;
+    }
+
+    if !confirm_run(rl, label, &suggestion.commands) {
+        println!("{}", "  ◈  Skipped.".dimmed());
+        return;
+    }
+
+    // Record only commands that actually succeeded: a failed command in the
+    // context would mislead the model on the next follow-up.
+    if execute_commands(&suggestion.commands) {
+        conversation.push(record_as, &suggestion.commands);
+        if opts.history_enabled {
+            history::append_to_history(&suggestion.commands);
+        }
+        println!("{}", "  ◈  Great! What else?".dimmed());
+    }
 }
 
 // =============================================================================
@@ -846,29 +846,48 @@ fn main() {
 //    • Colour output — many programs disable colour when stdout is a pipe
 // =============================================================================
 fn execute_commands(commands: &[String]) -> bool {
-    let mut all_ok = true;
-
-    for cmd in commands {
+    for (idx, cmd) in commands.iter().enumerate() {
         println!("\n{}  {}", "  ►".green().bold(), cmd.white().bold());
 
-        // Dispatch to the detected shell — see shell.rs for full detection
-        // logic covering zsh, bash, fish, sh, PowerShell 5/7, cmd.exe, Git Bash.
-        let status = shell::run_in_shell(cmd);
+        // `cd` is special: every command runs in its own child shell, so a
+        // `cd` there would be forgotten before the next command starts.
+        // A bare `cd <dir>` is therefore applied to this process instead,
+        // and the following children inherit the new working directory.
+        // (The audit saw GPT-4o-mini return ["cd dir", "git branch"] even
+        // though the system prompt forbids it.)
+        let outcome: Result<bool, String> = match shell::builtin_cd(cmd) {
+            Some(Ok(dir)) => {
+                println!("{}", format!("  ✔  Now in {}", dir.display()).green());
+                continue;
+            }
+            Some(Err(e)) => Err(format!("cd failed: {e}")),
+            // Dispatch to the detected shell — see shell.rs for the full
+            // detection logic (zsh, bash, fish, sh, PowerShell 5/7, cmd, Git Bash).
+            None => match shell::run_in_shell(cmd) {
+                Ok(s) if s.success() => Ok(true),
+                Ok(s) => Err(format!("Exited with {s}")),
+                Err(e) => Err(format!("Failed to launch shell: {e}")),
+            },
+        };
 
-        match status {
-            Ok(s) if s.success() => {
-                println!("{}", "  ✔  Done.".green());
-            }
-            Ok(s) => {
-                eprintln!("{}", format!("  ✗  Exited with status {s}").red());
-                all_ok = false;
-            }
-            Err(e) => {
-                eprintln!("{}", format!("  ✗  Failed to launch shell: {e}").red());
-                all_ok = false;
+        match outcome {
+            Ok(_) => println!("{}", "  ✔  Done.".green()),
+            Err(msg) => {
+                eprintln!("{}", format!("  ✗  {msg}").red());
+                // STOP at the first failure.  Steps are usually dependent
+                // ("make dir", then "cd dir", then "rm *"); running the rest
+                // after an error can act on the wrong directory.  Before
+                // v3.0.7 the loop kept going.
+                let skipped = commands.len() - idx - 1;
+                if skipped > 0 {
+                    eprintln!(
+                        "{}",
+                        format!("  ◈  Stopped — {skipped} remaining command(s) were not run.").yellow()
+                    );
+                }
+                return false;
             }
         }
     }
-
-    all_ok
+    true
 }

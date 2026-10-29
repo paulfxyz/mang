@@ -1,6 +1,6 @@
 // =============================================================================
 //  history.rs — Shell history integration
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────

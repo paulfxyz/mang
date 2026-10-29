@@ -1,6 +1,6 @@
 // =============================================================================
 //  shell.rs — Shell environment detection and command execution
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
@@ -188,4 +188,105 @@ pub fn run_in_shell(cmd: &str) -> std::io::Result<std::process::ExitStatus> {
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()
+}
+
+// =============================================================================
+//  builtin_cd — make a bare `cd` persist across the commands of one suggestion
+//  (added in v3.0.7)
+//
+//  PROBLEM
+//  ───────
+//  Every suggested command runs in its own child shell (`sh -c …`).  A lone
+//  `cd ~/projects/api` therefore changes the directory of a process that exits
+//  immediately, and the next command (`git branch`) runs in the old directory.
+//  The system prompt asks models to chain with `&&`, but the audit benchmark
+//  showed the default model ignoring that.
+//
+//  SOLUTION
+//  ────────
+//  A command that is *exactly* `cd <plain path>` is executed in-process with
+//  `std::env::set_current_dir`.  Child shells inherit it.  Anything more
+//  complicated (`cd x && make`, `cd $(…)`, `cd -`) is left to the real shell,
+//  so behaviour for those is unchanged.
+// =============================================================================
+
+/// If `cmd` is a bare `cd`, perform it and return the new directory.
+/// Returns `None` when `cmd` is not a bare `cd` (caller runs it normally).
+pub fn builtin_cd(cmd: &str) -> Option<std::io::Result<std::path::PathBuf>> {
+    let target = parse_cd(cmd)?;
+    let path = expand_home(&target);
+    Some(std::env::set_current_dir(&path).and_then(|_| std::env::current_dir()))
+}
+
+/// Extract the directory argument from a bare `cd` command.
+///
+/// Accepts `cd`, `cd dir`, `cd "dir with spaces"`, `cd 'dir'`, `cd /d C:\x`
+/// (cmd.exe).  Rejects anything containing shell metacharacters, because
+/// interpreting those correctly is the shell's job, not ours.
+fn parse_cd(cmd: &str) -> Option<String> {
+    let rest = cmd.trim().strip_prefix("cd")?;
+    // `cdrom` or `cd..` are not our business.
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let mut arg = rest.trim();
+    // cmd.exe: `cd /d C:\path` switches drive as well.
+    if let Some(r) = arg.strip_prefix("/d ").or_else(|| arg.strip_prefix("/D ")) {
+        arg = r.trim();
+    }
+    if arg.is_empty() {
+        return Some("~".to_string()); // bare `cd` goes home on POSIX shells
+    }
+    // Strip one layer of matching quotes.
+    let unquoted = match (arg.chars().next(), arg.chars().last()) {
+        (Some(a @ ('"' | '\'')), Some(b)) if a == b && arg.len() >= 2 => &arg[1..arg.len() - 1],
+        _ => arg,
+    };
+    // Anything that needs a real shell → decline.
+    const META: &[char] = &['&', '|', ';', '<', '>', '$', '`', '(', ')', '{', '}', '*', '?', '\n', '"', '\''];
+    if unquoted.contains(META) || unquoted == "-" {
+        return None;
+    }
+    Some(unquoted.to_string())
+}
+
+/// Expand a leading `~` / `~/` to the user's home directory.
+fn expand_home(path: &str) -> std::path::PathBuf {
+    if path == "~" || path.starts_with("~/") || path.starts_with("~\\") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(path.trim_start_matches('~').trim_start_matches(['/', '\\']));
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_cd_is_recognised() {
+        assert_eq!(parse_cd("cd /tmp").as_deref(), Some("/tmp"));
+        assert_eq!(parse_cd("  cd   ~/projects/api  ").as_deref(), Some("~/projects/api"));
+        assert_eq!(parse_cd("cd \"my folder\"").as_deref(), Some("my folder"));
+        assert_eq!(parse_cd("cd 'my folder'").as_deref(), Some("my folder"));
+        assert_eq!(parse_cd("cd").as_deref(), Some("~"));
+        assert_eq!(parse_cd("cd /d C:\\Users").as_deref(), Some("C:\\Users"));
+    }
+
+    #[test]
+    fn compound_or_unusual_cd_is_left_to_the_shell() {
+        for c in ["cd x && make", "cd $(pwd)", "cd -", "cd a; ls", "cdrom", "cd..", "ls", "echo cd x", "cd *"] {
+            assert!(parse_cd(c).is_none(), "should defer to the shell: {c}");
+        }
+    }
+
+    #[test]
+    fn tilde_expands_to_home() {
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(expand_home("~"), home);
+            assert_eq!(expand_home("~/x"), home.join("x"));
+        }
+        assert_eq!(expand_home("rel/dir"), std::path::PathBuf::from("rel/dir"));
+    }
 }

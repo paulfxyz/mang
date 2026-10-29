@@ -1,6 +1,6 @@
 // =============================================================================
 //  feedback.rs — !feedback / !fb shortcut handler
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
@@ -48,13 +48,8 @@ pub fn parse(line: &str) -> Option<FeedbackCommand> {
     let line = line.trim().to_lowercase();
 
     // Match both !feedback and !fb as the trigger
-    let sub = if let Some(rest) = line.strip_prefix("!feedback") {
-        rest.trim().to_string()
-    } else if let Some(rest) = line.strip_prefix("!fb") {
-        rest.trim().to_string()
-    } else {
-        return None;
-    };
+    let rest = line.strip_prefix("!feedback").or_else(|| line.strip_prefix("!fb"))?;
+    let sub = rest.trim().to_string();
 
     Some(match sub.as_str() {
         "" | "status" => FeedbackCommand::Status,
@@ -251,7 +246,7 @@ fn run_personal_wizard(cfg: &mut Config) -> bool {
     let col_hint = if cfg.telemetry_user_collection.is_empty() {
         "Collection ID (from JSONBin dashboard) ›".to_string()
     } else {
-        format!("Collection ID (Enter to keep {}) ›", &cfg.telemetry_user_collection)
+        format!("Collection ID (Enter to keep {}) ›", cfg.telemetry_user_collection)
     };
     print!("  {}  ", col_hint.yellow().bold());
     io::stdout().flush().unwrap_or(());

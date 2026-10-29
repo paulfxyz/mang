@@ -1,6 +1,6 @@
 // =============================================================================
 //  context.rs — Multi-turn conversation context
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
@@ -58,9 +58,19 @@ pub struct Turn {
     pub prompt: String,
 
     /// The shell commands that were confirmed and executed (or shown in dry-run).
-    /// Stored as a single joined string for compact representation in the AI
-    /// context window: "cmd1 && cmd2" reads more naturally than a JSON array.
-    pub commands_summary: String,
+    ///
+    /// v3.0.7: stored as a real `Vec<String>` instead of one `" ; "`-joined
+    /// string.  The old representation was lossy — any command that itself
+    /// contained ` ; ` (very common in PowerShell and `find -exec`) was split
+    /// into bogus pieces when replayed to the model or saved with `!save`.
+    pub commands: Vec<String>,
+}
+
+impl Turn {
+    /// Human-readable one-line form ("cmd1 ; cmd2") used for display only.
+    pub fn summary(&self) -> String {
+        self.commands.join(" ; ")
+    }
 }
 
 /// A rolling window of recent turns, used to provide follow-up context to
@@ -107,13 +117,9 @@ impl ConversationContext {
             self.turns.remove(0);
         }
 
-        // Summarise multiple commands as a semicolon-separated string.
-        // This is more readable than a JSON array when injected into a prompt.
-        let commands_summary = commands.join(" ; ");
-
         self.turns.push(Turn {
-            prompt: prompt.to_string(),
-            commands_summary,
+            prompt:   prompt.to_string(),
+            commands: commands.to_vec(),
         });
     }
 

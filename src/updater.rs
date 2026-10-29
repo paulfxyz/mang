@@ -29,7 +29,7 @@
 //  RATE LIMITING
 //  ─────────────
 //  We store the last-check timestamp in:
-//    ~/.config/mang-sh/last_update_check
+//    ~/.config/mang/last_update_check
 //  (a simple Unix timestamp file — one integer, no JSON parsing needed)
 //  If the file is fresh (< 24 hours old), the background check is skipped.
 //  The !update / !check shortcuts always force a fresh check regardless.
@@ -101,7 +101,10 @@ pub fn check_for_update(force: bool) -> UpdateStatus {
     record_check_time();
 
     match latest {
-        Some(v) if v.as_str() != current => UpdateStatus::UpdateAvailable(v),
+        // v3.0.7: compare numerically.  The old `!=` also fired when the
+        // local build was NEWER than main (a dev build, or main briefly
+        // behind a release) and offered a "downgrade" as an update.
+        Some(v) if is_newer(&v, current) => UpdateStatus::UpdateAvailable(v),
         Some(_) => UpdateStatus::UpToDate,
         None    => UpdateStatus::Unavailable,
     }
@@ -210,5 +213,52 @@ pub fn run_update() -> Result<(), String> {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("Could not launch updater: {e}")),
         }
+    }
+}
+
+// =============================================================================
+//  Version comparison (v3.0.7)
+// =============================================================================
+
+/// Parse "MAJOR.MINOR.PATCH" (a leading `v` and any `-pre` suffix are ignored).
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let core = v.trim().trim_start_matches('v').split(['-', '+']).next()?;
+    let mut it = core.split('.').map(|p| p.parse::<u64>().ok());
+    Some((it.next()??, it.next().flatten().unwrap_or(0), it.next().flatten().unwrap_or(0)))
+}
+
+/// True when `latest` is strictly newer than `current`.
+/// Unparseable versions never trigger an update prompt.
+fn is_newer(latest: &str, current: &str) -> bool {
+    match (parse_version(latest), parse_version(current)) {
+        (Some(l), Some(c)) => l > c,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn newer_versions_are_detected() {
+        assert!(is_newer("3.0.7", "3.0.6"));
+        assert!(is_newer("3.1.0", "3.0.9"));
+        assert!(is_newer("4.0.0", "3.9.9"));
+        assert!(is_newer("3.0.10", "3.0.9")); // numeric, not lexicographic
+    }
+
+    #[test]
+    fn same_or_older_is_not_an_update() {
+        assert!(!is_newer("3.0.6", "3.0.6"));
+        assert!(!is_newer("3.0.5", "3.0.6"));
+        assert!(!is_newer("garbage", "3.0.6"));
+        assert!(!is_newer("3.0.7", "garbage"));
+    }
+
+    #[test]
+    fn v_prefix_and_prerelease_suffix_are_tolerated() {
+        assert_eq!(parse_version("v3.0.6"), Some((3, 0, 6)));
+        assert_eq!(parse_version("3.0.6-beta.1"), Some((3, 0, 6)));
     }
 }

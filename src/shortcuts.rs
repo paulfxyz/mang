@@ -1,6 +1,6 @@
 // =============================================================================
 //  shortcuts.rs — Named command shortcuts (user feature request)
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
@@ -26,7 +26,7 @@
 //  SHORTCUTS STORAGE
 //  ─────────────────
 //  Shortcuts are persisted to disk at:
-//    macOS/Linux: ~/.config/mang-sh/shortcuts.json
+//    macOS/Linux: ~/.config/mang/shortcuts.json
 //    Windows:     %APPDATA%\mang.sh\shortcuts.json
 //
 //  Format: a flat JSON map of  shortcut_name → [cmd1, cmd2, ...]

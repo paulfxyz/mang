@@ -1,6 +1,6 @@
 // =============================================================================
 //  cli.rs — Command-line argument parsing
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
@@ -47,7 +47,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name    = "mang.sh",
-    version = "3.0.0",
+    version,  // v3.0.7: taken from Cargo.toml (was hard-coded to 3.0.0)
     about   = "Natural language terminal assistant powered by AI.",
     long_about = None,
 )]

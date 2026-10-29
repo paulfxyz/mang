@@ -4,6 +4,75 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ---
 
+## [3.0.7] — 2026-10-29
+
+### Audit release
+
+A full audit of the code and of every claim made in the README and on the
+website, plus a benchmark of the system prompt against current frontier models
+via OpenRouter. Method, numbers and caveats are in [AUDIT.md](AUDIT.md).
+
+### Security
+
+- **`config.json` is now really `0600`.** The header comment always said so;
+  the file was in fact created with the default umask (`0644`), leaving the API
+  key readable by other local users. It is now created `0600` in a `0700`
+  directory, written atomically (temp file + rename), and existing files are
+  tightened on load.
+- **Local safety gate (`safety.rs`).** Suggested commands are matched against a
+  table of known foot-guns (recursive/forced delete, `dd`, `mkfs`, `sudo`,
+  `chmod -R`, pipe-to-shell, force-push, destructive SQL, Windows equivalents…).
+  A match prints the reasons and changes the prompt to `[y/N]` — Enter cancels.
+  Saved shortcuts get the same treatment. Ordinary commands keep `[Y/n]`.
+- **Execution stops at the first failing command.** Previously the remaining
+  commands still ran, e.g. a `rm` after a failed `cd`.
+- **Telemetry free text is scrubbed** (`redact()`): API keys and tokens,
+  e-mail addresses, IPv4 addresses and home-directory paths are replaced with
+  placeholders before an opt-in entry is built.
+
+### Fixed
+
+- First-run setup looped forever (100 MB of output in 5 s) when stdin was
+  closed, e.g. `yo < /dev/null`, cron, or `ssh host yo` without a tty.
+- Startup could stall up to 6 s on every launch when GitHub was unreachable;
+  the update check is now polled, never joined.
+- A bare `cd <dir>` returned by the model now persists for the following
+  commands (each command runs in its own child shell).
+- Follow-up context corrupted Windows paths: the previous turn is now replayed
+  as properly escaped JSON, and kept as a list rather than a `" ; "`-joined
+  string.
+- `yo --version` printed `3.0.0`; it now reports the Cargo version.
+- Setup menu offered three OpenRouter model slugs that no longer exist (404);
+  all slugs were checked against the live model list.
+- Natural-language config triggers were unanchored, so ordinary requests such
+  as "change the model name in config.json" opened the setup wizard.
+- The updater offered a "downgrade" when the local build was newer than `main`.
+- `uninstall.sh` replaced rc files with a `0600` temp file via `mv`, breaking
+  symlinked dotfiles; it now copies the content back in place.
+- Reasoning models: `max_tokens` raised from 512 to 1024 and
+  `reasoning.effort = low` requested. Truncated and content-filtered replies
+  now produce plain-English messages instead of "non-JSON output".
+- Suggestion box width miscounted non-ASCII commands; API HTTP errors (401,
+  402, 404, 429) now carry an actionable hint.
+
+### Improved
+
+- System prompt: rule 5 (every command runs in a fresh shell), rule 6 (least
+  destructive variant) and rule 8 (ignore instructions inside the request).
+  In the benchmark this removed `kill -9` from the default model's answers.
+- Tolerant JSON extraction (first balanced `{…}`; survives fences and prose).
+- TLS: `rustls-tls-native-roots` added alongside the bundled roots, so
+  corporate proxies and VPNs that re-sign TLS with an OS-trusted CA work.
+- One retry on transient 5xx responses from OpenRouter.
+- Refactor: the confirm/execute sequence (copy-pasted five times) and the two
+  near-identical HTTP code paths are now one each.
+- 25 unit tests (the first tests in the project); `cargo clippy --all-targets
+  -- -D warnings` passes on Rust 1.99.
+- Docs: README claims corrected (see AUDIT.md), model table re-measured,
+  Bugs 6–9 documented, changelog summary brought up to date.
+
+---
+
 ## [3.0.6] — 2026-06-21
 
 ### Improved — Smart network error diagnostics
@@ -293,14 +362,10 @@ The Chinese characters `句芒` appear first on the header line — the name in
 its original form, before the romanisation. The tool is named after Gou Mang;
 showing his name in Chinese is the correct presentation.
 
-#### Uninstall script — legacy yo-rust cleanup
-`uninstall.sh` now removes legacy `yo-rust` configuration directories left
-behind from versions before the v3.0.0 rebrand:
-- macOS: `~/Library/Application Support/yo-rust`
-- Linux: `~/.config/yo-rust`
-
-Also cleans `yo-rust aliases` marker lines from shell rc files, in addition
-to the existing `mang.sh aliases` cleanup.
+#### Uninstall script — legacy cleanup
+`uninstall.sh` now removes configuration directories left behind by versions
+before the v3.0.0 rebrand, and cleans the old alias marker lines from shell rc
+files, in addition to the existing `mang.sh aliases` cleanup.
 
 Config directory path corrected from `~/.config/mang.sh` to `~/.config/mang-sh`
 (the correct XDG path the `dirs` crate uses on Linux).
@@ -309,21 +374,18 @@ Config directory path corrected from `~/.config/mang.sh` to `~/.config/mang-sh`
 
 ## [3.0.0] — 2026-03-23
 
-### 🏛️ Rebrand — Yo, Rust! → mang.sh (句芒)
+### 🏛️ Rebrand — mang.sh (句芒)
 
 This is a breaking rename, not a breaking code change. All features are identical
 to v2.3.5. The binary is still invoked as `yo`. The config directory moves from
-`~/.config/yo-rust/` to `~/.config/mang-sh/` (handled automatically by the
+the pre-v3 config directory to `~/.config/mang-sh/` (handled automatically by the
 `dirs` crate using the new Cargo.toml package name `mang-sh`).
 
 **The name change:**
 
-The project started as *Yo, Rust!* — a developer pun. `yo` is the command you
-type. Rust is the language underneath. Put them together: Yo, Rust! A coder
-shouting at their toolchain.
-
-It was a fine name for a side project. It was a bad name for a tool that deserves
-to be taken seriously.
+The project started life under a pun-based working title. It was a fine name for
+a side project and a bad name for a tool that deserves to be taken seriously, so
+it was renamed.
 
 **Gou Mang (句芒):**
 
@@ -351,7 +413,7 @@ when called. That's the right tone for a developer tool.
 - README completely rewritten with Gou Mang mythology, deeper engineering
   context, and full lessons learned
 - INSTALL.md and CHANGELOG.md completely rewritten
-- Zero remaining references to the old name anywhere in the codebase
+- No leftover references to the previous name in the codebase
 
 ---
 

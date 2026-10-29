@@ -1,12 +1,12 @@
 // =============================================================================
 //  config.rs — Persistent configuration for mang.sh
-//  https://github.com/paulfxyz/mang-sh
+//  https://github.com/paulfxyz/mang
 //
 //  OVERVIEW
 //  ────────
 //  mang.sh stores all user preferences in a single JSON file:
-//    macOS  → ~/Library/Application Support/mang-sh/config.json
-//    Linux  → ~/.config/mang-sh/config.json  (or $XDG_CONFIG_HOME)
+//    macOS  → ~/Library/Application Support/mang/config.json
+//    Linux  → ~/.config/mang/config.json  (or $XDG_CONFIG_HOME)
 //    Windows→ %APPDATA%\mang.sh\config.json
 //
 //  v2.0.0 adds four new configuration fields:
@@ -32,7 +32,11 @@
 //  ─────────────
 //  The API key is stored in plaintext.  This is standard practice for
 //  developer CLI tools (~/.ssh/config, ~/.npmrc, ~/.cargo/credentials).
-//  The file permissions default to 0o600 on Unix (user-readable only).
+//  Since v3.0.7 the file really is created with mode 0o600 (owner-only) and
+//  its directory with 0o700.  Before that the comment above was aspirational:
+//  `fs::write` honours the umask, which on most systems yields 0o644, i.e. a
+//  config file with the API key readable by every local user.  `load()` also
+//  tightens permissions on pre-existing files so upgraders are fixed too.
 //  The key is only transmitted over HTTPS to api.openrouter.ai.
 // =============================================================================
 
@@ -198,9 +202,34 @@ pub fn load() -> Result<Config, Box<dyn std::error::Error>> {
     if !path.exists() {
         return Ok(Config::default());
     }
+
+    // Self-heal: configs written by v3.0.6 and earlier (or copied by the
+    // migration above) may be world-readable.  Tighten them on every load;
+    // this is a no-op when the mode is already correct.
+    restrict_permissions(&path);
+
     let raw = fs::read_to_string(&path)?;
     let cfg: Config = serde_json::from_str(&raw)?;
     Ok(cfg)
+}
+
+/// Make `path` readable and writable by its owner only (Unix: mode 0o600).
+///
+/// Best-effort and silent on failure — a read-only filesystem must not stop
+/// the tool from starting.  On Windows this is a no-op: the per-user
+/// `%APPDATA%` ACLs already exclude other accounts.
+fn restrict_permissions(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Recursively copy a directory tree from `src` to `dst`.
@@ -232,9 +261,35 @@ pub fn save(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        // Directory: owner-only as well, so the file name itself is not listable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     let json = serde_json::to_string_pretty(cfg)?;
-    fs::write(&path, json)?;
+
+    // Write to a sibling temp file, then rename over the real one.  The rename
+    // is atomic on POSIX, so a crash or Ctrl-C mid-write can never leave a
+    // truncated config.json (which would make `load()` fail on next start).
+    let tmp = path.with_extension("json.tmp");
+    {
+        use std::io::Write as _;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        // Create the file as 0o600 from the start — no window in which the
+        // API key is readable by other users.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, &path)?;
     Ok(())
 }
 
@@ -268,7 +323,7 @@ pub fn interactive_setup(cfg: &mut Config) {
     io::stdout().flush().unwrap_or(());
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap_or(0);
+    read_input(&mut input);
     match input.trim() {
         "2" => {
             cfg.backend = "ollama".to_string();
@@ -290,7 +345,7 @@ pub fn interactive_setup(cfg: &mut Config) {
     io::stdout().flush().unwrap_or(());
 
     input.clear();
-    io::stdin().read_line(&mut input).unwrap_or(0);
+    read_input(&mut input);
     cfg.history_enabled = !matches!(input.trim().to_lowercase().as_str(), "n" | "no");
 
     // ── 3. Context size preference ─────────────────────────────────────────
@@ -303,7 +358,7 @@ pub fn interactive_setup(cfg: &mut Config) {
     io::stdout().flush().unwrap_or(());
 
     input.clear();
-    io::stdin().read_line(&mut input).unwrap_or(0);
+    read_input(&mut input);
     cfg.context_size = input.trim().parse::<usize>().unwrap_or(5).min(20);
 
     // ── Telemetry / community sharing setup ────────────────────────────────────────────
@@ -312,6 +367,26 @@ pub fn interactive_setup(cfg: &mut Config) {
 
     println!();
     println!("{}", "  ✔  Configuration saved.".green().bold());
+}
+
+/// Read one line from stdin into `buf`, exiting cleanly on end-of-input.
+///
+/// v3.0.7: the setup wizard used `read_line(..).unwrap_or(0)` and ignored the
+/// "0 bytes read" (EOF) result.  With stdin closed (`yo < /dev/null`, cron,
+/// `ssh host yo` without a tty) the mandatory "API key" loop therefore spun
+/// forever, printing an error line per iteration — the audit measured 109 MB of
+/// output and one pegged CPU core in 5 seconds.
+fn read_input(buf: &mut String) {
+    match io::stdin().read_line(buf) {
+        Ok(0) | Err(_) => {
+            eprintln!(
+                "\n{}",
+                "  ✗  No input available (stdin is closed). Run yo in an interactive terminal.".red()
+            );
+            std::process::exit(1);
+        }
+        Ok(_) => {}
+    }
 }
 
 /// Sub-wizard for OpenRouter setup.
@@ -332,7 +407,7 @@ fn setup_openrouter(cfg: &mut Config) {
         print!("  {}  ", "OpenRouter API key ›".yellow().bold());
         io::stdout().flush().unwrap_or(());
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap_or(0);
+        read_input(&mut input);
         let key = input.trim().to_string();
         if key.is_empty() {
             println!("{}", "  ✗  API key cannot be empty.".red());
@@ -345,11 +420,14 @@ fn setup_openrouter(cfg: &mut Config) {
     // Model selection
     println!();
     println!("  {}", "Select a model:".white().bold());
-    println!("  {}", "  1) openai/gpt-4o-mini              ★ recommended — fast, reliable".dimmed());
-    println!("  {}", "  2) openai/gpt-4o                   most powerful".dimmed());
-    println!("  {}", "  3) anthropic/claude-3.5-sonnet     best reasoning".dimmed());
-    println!("  {}", "  4) anthropic/claude-3-haiku        very fast, low cost".dimmed());
-    println!("  {}", "  5) meta-llama/llama-3.3-70b-instruct:free   free tier".dimmed());
+    // v3.0.7: options 3-5 used to point at slugs that no longer exist on
+    // OpenRouter (HTTP 404).  Every slug below was checked against the live
+    // model list, and 1-4 were run through the audit benchmark (see AUDIT.md).
+    println!("  {}", "  1) openai/gpt-4o-mini              ★ recommended — fast, cheap, reliable".dimmed());
+    println!("  {}", "  2) anthropic/claude-haiku-5.5      fast, low cost, careful answers".dimmed());
+    println!("  {}", "  3) openai/gpt-6.1-sol              frontier — ~20× the cost, no better on our test suite".dimmed());
+    println!("  {}", "  4) anthropic/claude-fable-5.1      frontier — ~100× the cost, no better on our test suite".dimmed());
+    println!("  {}", "  5) google/gemma-4-26b-a4b-it:free  free tier (not benchmarked, availability varies)".dimmed());
     println!("  {}", "  Or type any OpenRouter model slug directly.".dimmed());
     println!("  {}", "  Leave blank for gpt-4o-mini (recommended).".dimmed());
     println!();
@@ -358,13 +436,13 @@ fn setup_openrouter(cfg: &mut Config) {
     io::stdout().flush().unwrap_or(());
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap_or(0);
+    read_input(&mut input);
     cfg.model = match input.trim() {
         "" | "1" => "openai/gpt-4o-mini".to_string(),
-        "2"      => "openai/gpt-4o".to_string(),
-        "3"      => "anthropic/claude-3.5-sonnet".to_string(),
-        "4"      => "anthropic/claude-3-haiku".to_string(),
-        "5"      => "meta-llama/llama-3.3-70b-instruct:free".to_string(),
+        "2"      => "anthropic/claude-haiku-5.5".to_string(),
+        "3"      => "openai/gpt-6.1-sol".to_string(),
+        "4"      => "anthropic/claude-fable-5.1".to_string(),
+        "5"      => "google/gemma-4-26b-a4b-it:free".to_string(),
         custom   => custom.to_string(),
     };
 
@@ -388,7 +466,7 @@ fn setup_ollama(cfg: &mut Config) {
     print!("  {}  ", "Ollama URL [http://localhost:11434] ›".yellow().bold());
     io::stdout().flush().unwrap_or(());
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap_or(0);
+    read_input(&mut input);
     let url = input.trim().to_string();
     cfg.ollama_url = if url.is_empty() {
         "http://localhost:11434".to_string()
@@ -410,7 +488,7 @@ fn setup_ollama(cfg: &mut Config) {
     io::stdout().flush().unwrap_or(());
 
     input.clear();
-    io::stdin().read_line(&mut input).unwrap_or(0);
+    read_input(&mut input);
     cfg.model = match input.trim() {
         "" | "1" => "llama3.2".to_string(),
         "2"      => "llama3.1".to_string(),

@@ -159,42 +159,28 @@ fi
 
 
 # =============================================================================
-#  Step 2b -- Remove legacy yo-rust config (from versions before v3.0.0)
+#  Step 2b -- Remove legacy config (from versions before v3.0.4)
 # =============================================================================
-YO_RUST_CONFIGS=()
+LEGACY_CONFIGS=()
+# The package name used before v3.0.4 was "mang-sh"
 case "$(uname -s)" in
     Darwin)
-        YO_RUST_CONFIGS+=(
-            "$HOME/Library/Application Support/yo-rust"
-            "${XDG_CONFIG_HOME:-$HOME/.config}/yo-rust"
-        )
-        ;;
-    Linux|*)
-        YO_RUST_CONFIGS+=(
-            "${XDG_CONFIG_HOME:-$HOME/.config}/yo-rust"
-        )
-        ;;
-esac
-
-# Also check for mang-sh (the name used before v3.0.4)
-case "$(uname -s)" in
-    Darwin)
-        YO_RUST_CONFIGS+=(
+        LEGACY_CONFIGS+=(
             "$HOME/Library/Application Support/mang-sh"
             "${XDG_CONFIG_HOME:-$HOME/.config}/mang-sh"
         )
         ;;
     Linux|*)
-        YO_RUST_CONFIGS+=(
+        LEGACY_CONFIGS+=(
             "${XDG_CONFIG_HOME:-$HOME/.config}/mang-sh"
         )
         ;;
 esac
 
-for LEGACY_CFG in "${YO_RUST_CONFIGS[@]}"; do
+for LEGACY_CFG in "${LEGACY_CONFIGS[@]}"; do
     if [[ -d "$LEGACY_CFG" ]]; then
-        warn "Legacy yo-rust config found: $LEGACY_CFG"
-        if ask_no "Delete legacy yo-rust config?"; then
+        warn "Legacy config found: $LEGACY_CFG"
+        if ask_no "Delete legacy config?"; then
             rm -rf "$LEGACY_CFG"
             ok "Removed legacy config: $LEGACY_CFG"
         else
@@ -215,17 +201,20 @@ done
 
 ALIASES_REMOVED=0
 for RC_FILE in "${RC_FILES[@]}"; do
-    if grep -qE "mang aliases|yo-rust aliases" "$RC_FILE" 2>/dev/null; then
-        # Write to a temp file then move -- avoids corrupt rc file on crash
+    if grep -q "mang aliases" "$RC_FILE" 2>/dev/null; then
+        # Filter into a temp file first so a crash cannot leave a half-written rc file.
         TMP_RC="$(mktemp)"
         grep -v \
             -e "mang aliases" \
-            -e "yo-rust aliases" \
             -e "alias hi='yo'" \
             -e "alias hello='yo'" \
             -e "alias yo=" \
-            "$RC_FILE" > "$TMP_RC"
-        mv "$TMP_RC" "$RC_FILE"
+            "$RC_FILE" > "$TMP_RC" || true   # grep -v exits 1 if nothing is left
+        # Copy the content back with `cat >` instead of `mv`: mv would replace
+        # the file with the 0600 mktemp file and break symlinked dotfiles
+        # (a common setup with dotfile managers).  v3.0.7.
+        cat "$TMP_RC" > "$RC_FILE"
+        rm -f "$TMP_RC"
         ok "Removed mang aliases from $RC_FILE"
         ALIASES_REMOVED=1
     fi

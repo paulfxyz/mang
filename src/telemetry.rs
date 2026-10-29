@@ -14,14 +14,23 @@
 //  ┌──────────────────────────────────────────┬────────────────────────────────┐
 //  │  WHAT IS COLLECTED (opt-in only)         │  WHAT IS NEVER COLLECTED       │
 //  ├──────────────────────────────────────────┼────────────────────────────────┤
-//  │  ✓ Natural-language prompt               │  ✗ API keys (never, ever)      │
-//  │  ✓ Shell commands that ran               │  ✗ File paths or contents      │
+//  │  ✓ Natural-language prompt (scrubbed)    │  ✗ API keys (never, ever)      │
+//  │  ✓ Shell commands that ran (scrubbed)    │  ✗ Home-directory paths        │
 //  │  ✓ AI model + backend                    │  ✗ Working directory (CWD)     │
 //  │  ✓ OS, arch, shell kind                  │  ✗ Command output              │
 //  │  ✓ worked = true / false                 │  ✗ Username / hostname / IP    │
 //  │  ✓ mang.sh version                       │                                │
 //  │  ✓ UTC timestamp                         │                                │
 //  └──────────────────────────────────────────┴────────────────────────────────┘
+//
+//  REDACTION (v3.0.7)
+//  ──────────────────
+//  The prompt and the commands are free text, so "never collected" cannot be
+//  guaranteed by the schema alone: a user can type a key into a prompt, and a
+//  command can contain their home directory or e-mail address.  `redact()`
+//  scrubs those patterns locally BEFORE the payload is built — see its doc
+//  comment for the exact list.  It is best-effort; the real privacy control
+//  is that sharing is opt-in and can be switched off at any time with !feedback.
 //
 //  HOW JSONBIN.IO WORKS
 //  ────────────────────
@@ -132,8 +141,9 @@ impl TelemetryEntry {
         worked:   Option<bool>,
     ) -> Self {
         Self {
-            prompt:          prompt.to_string(),
-            commands:        commands.to_vec(),
+            // v3.0.7: everything free-text passes through `redact` first.
+            prompt:          redact(prompt),
+            commands:        commands.iter().map(|c| redact(c)).collect(),
             model:           model.to_string(),
             backend:         backend.to_string(),
             os:              std::env::consts::OS,
@@ -366,4 +376,86 @@ pub fn iso8601_now() -> String {
 #[inline]
 fn is_leap(year: u32) -> bool {
     year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+// =============================================================================
+//  redact — local scrubbing of free text before it leaves the machine
+//  (added in v3.0.7)
+// =============================================================================
+
+use std::sync::OnceLock;
+
+/// Replace secrets and personal identifiers in `text` with placeholders.
+///
+/// Scrubbed:
+///   * API keys / tokens:  `sk-…`, `sk-or-v1-…`, `ghp_…`, `github_pat_…`,
+///     `xox?-…`, `AKIA…`, JWTs, and anything after `Bearer `
+///   * `KEY=value` style secrets (`API_KEY=…`, `TOKEN=…`, `PASSWORD=…`, `SECRET=…`)
+///   * e-mail addresses
+///   * the user's home directory (`/Users/alice/x` → `~/x`), and
+///     any remaining `/Users/<name>`, `/home/<name>`, `C:\Users\<name>` prefix
+///   * IPv4 addresses
+pub fn redact(text: &str) -> String {
+    use regex::Regex;
+    static RULES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+    let rules = RULES.get_or_init(|| {
+        [
+            (r#"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}"#,                         "Bearer <redacted>"),
+            (r#"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}"#,                           "<redacted-key>"),
+            (r#"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"#, "<redacted-key>"),
+            (r#"\bxox[abpr]-[A-Za-z0-9-]{10,}"#,                               "<redacted-key>"),
+            (r#"\bAKIA[0-9A-Z]{16}\b"#,                                        "<redacted-key>"),
+            (r#"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"#, "<redacted-jwt>"),
+            (r#"(?i)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD))=\S+"#,   "$1=<redacted>"),
+            (r#"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#,              "<email>"),
+            (r#"(?:/Users|/home)/[^/\s'"]+"#,                                  "~"),
+            (r#"(?i)[A-Z]:\\Users\\[^\\\s'"]+"#,                                "~"),
+            (r#"\b(?:\d{1,3}\.){3}\d{1,3}\b"#,                                 "<ip>"),
+        ]
+        .iter()
+        .filter_map(|(p, r)| Regex::new(p).ok().map(|re| (re, *r)))
+        .collect()
+    });
+
+    let mut out = text.to_string();
+    for (re, replacement) in rules {
+        out = re.replace_all(&out, *replacement).into_owned();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact;
+
+    #[test]
+    fn api_keys_and_tokens_are_removed() {
+        for secret in [
+            "sk-or-v1-b01d12f453bd34ea8c23e781c2632d2b",
+            "sk-proj-abcdefghijklmnop1234",
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "AKIAABCDEFGHIJKLMNOP",
+        ] {
+            let out = redact(&format!("curl -H 'x: {secret}' https://x"));
+            assert!(!out.contains(secret), "leaked: {out}");
+        }
+        assert!(!redact("curl -H 'Authorization: Bearer abcdef123456789'").contains("abcdef123456789"));
+        assert_eq!(redact("export OPENAI_API_KEY=abc123xyz"), "export OPENAI_API_KEY=<redacted>");
+    }
+
+    #[test]
+    fn personal_identifiers_are_removed() {
+        assert_eq!(redact("ls /Users/alice/projects"), "ls ~/projects");
+        assert_eq!(redact("cd /home/bob/work"), "cd ~/work");
+        assert_eq!(redact(r"dir C:\Users\Carol\Desktop"), r"dir ~\Desktop");
+        assert_eq!(redact("mail me at jane.doe@example.com"), "mail me at <email>");
+        assert_eq!(redact("ssh 192.168.1.20"), "ssh <ip>");
+    }
+
+    #[test]
+    fn ordinary_commands_pass_through_unchanged() {
+        for c in ["ls -la", "find . -name '*.log' -mtime +7", "git log --oneline -n 5", "tar -czf logs.tar.gz logs"] {
+            assert_eq!(redact(c), c);
+        }
+    }
 }

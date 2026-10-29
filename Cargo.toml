@@ -1,6 +1,6 @@
 [package]
 name        = "mang"
-version     = "3.0.6"
+version     = "3.0.7"
 edition     = "2021"
 authors     = ["Paul Fleury <hello@paulfleury.com>"]
 description = "mang.sh — The spirit messenger. Natural language → terminal commands. Powered by Gou Mang (句芒)."
@@ -29,7 +29,13 @@ path = "src/main.rs"
 # We use rustls-tls (pure Rust, statically linked) rather than native-tls
 # (links against the system OpenSSL) so the binary works everywhere with
 # no dependency on system TLS libraries, CA bundle paths, or OpenSSL versions.
-reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+#
+# v3.0.7: `rustls-tls-native-roots` is ADDED on top (the bundled Mozilla roots
+# stay).  With only the bundled roots, a corporate proxy / VPN / security tool
+# that re-signs TLS with its own CA — whose root lives in the OS trust store —
+# made every request fail with "error sending request".  The native roots make
+# those setups work; the bundled ones keep minimal containers working.
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls", "rustls-tls-native-roots"], default-features = false }
 
 # serde + serde_json — compile-time serialization derive macros.
 # Used for:

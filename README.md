@@ -10,7 +10,7 @@
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Powered by OpenRouter](https://img.shields.io/badge/Powered%20by-OpenRouter-6c47ff?style=for-the-badge)](https://openrouter.ai)
 [![Ollama](https://img.shields.io/badge/Supports-Ollama-black?style=for-the-badge)](https://ollama.ai)
-[![Version](https://img.shields.io/badge/Version-3.0.6-brightgreen?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-3.0.7-brightgreen?style=for-the-badge)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](https://github.com/paulfxyz/mang/pulls)
 
@@ -43,7 +43,7 @@
   ║   ███████║██║  ██║                            ║
   ║   ╚══════╝╚═╝  ╚═╝                            ║
   ║                                               ║
-  ║   v3.0.6  ·  mang.sh  ·  github.com/paulfxyz  ║
+  ║   v3.0.7  ·  mang.sh  ·  github.com/paulfxyz  ║
   ╚═══════════════════════════════════════════════╝
 ```
 
@@ -121,13 +121,13 @@ Rust answered all three. This document explains why.
 
 A Python CLI needs Python, the right version, the right packages, the right virtualenv. A Node.js tool needs Node, npm, and potentially hundreds of packages in `node_modules`. These aren't theoretical concerns — they cause real failures in production. The wrong Python version, a missing package, a broken lockfile.
 
-A compiled Rust binary is a single self-contained executable. Copy it to any machine with the same OS and architecture — it works. No interpreter, no runtime, no dependencies. `yo` on macOS or Linux. `yo.exe` on Windows. That's it.
+A compiled Rust binary is a single self-contained executable. Copy it to any machine with the same OS and architecture — it works. No interpreter and no runtime to install — the release binary links only the system C library (`libc`, `libgcc`), and every Rust crate it uses is compiled in. `yo` on macOS or Linux. `yo.exe` on Windows. That's it.
 
 For a tool you want to install once and trust forever, this is non-negotiable.
 
 ### The performance argument
 
-Rust compiles to native machine code via LLVM — the same optimisation infrastructure used by C and C++. For mang.sh, the bottleneck is always the AI network call (500ms–3s). The binary itself starts in under 10ms. No interpreter warmup, no GC pause, no JIT compilation lag. The prompt appears instantly.
+Rust compiles to native machine code via LLVM — the same optimisation infrastructure used by C and C++. For mang.sh, the bottleneck is always the AI network call (500ms–3s). The binary itself starts in under 10 ms (measured v3.0.7: median 0.9 ms for `yo --version`, 1.5 ms to banner and exit, Linux x86_64 — see [AUDIT.md](AUDIT.md)). No interpreter warmup, no GC pause, no JIT compilation lag. The prompt appears instantly.
 
 ### The memory safety argument
 
@@ -163,8 +163,9 @@ The misconception: Rust is for operating systems, game engines, embedded firmwar
 | Feature | Detail |
 |---|---|
 | 🗣️ Natural language | Plain English → shell commands via any OpenRouter model or local Ollama |
-| ✅ Always confirms | Every suggestion requires `Y` before anything runs |
-| ⚡ Single binary | No Python, Node.js, or runtime — one file, works everywhere |
+| ✅ Always confirms | Nothing runs without your answer. Routine commands are `[Y/n]` (Enter runs); anything that looks destructive — `rm -rf`, `sudo`, `dd`, `curl \| sh`, `git push --force`, … — shows why and flips to `[y/N]`, where Enter cancels |
+| 🛡️ Local safety gate | `safety.rs` checks every suggestion against known foot-guns, independent of the AI model |
+| ⚡ Single binary | No Python, Node.js, or runtime — one ~6 MB file, links only libc |
 | 🔑 Local config | API key stored in your OS config directory only |
 | 句芒 Spirit banner | Block-letter `MANG` / `.sh` with Gou Mang (句芒) subtitle on every launch |
 | 🧠 Intent detection | "use ollama" / "change model" triggers reconfiguration without API call |
@@ -173,7 +174,7 @@ The misconception: Rust is for operating systems, game engines, embedded firmwar
 | 🪪 Credits screen | `!credits` / `!cr` — author info, project links, build stack |
 | 🐚 Three aliases | `yo`, `hi`, `hello` — all invoke the spirit messenger |
 | 🌍 Context-aware | OS, arch, CWD, and precise shell sent with every request |
-| 🛡️ Safe prompting | Temperature 0.2 — deterministic, conservative suggestions |
+| 🎯 Conservative prompting | Temperature 0.2, least-destructive-variant rule, stops at the first failing command |
 | 💬 Explanations | Every suggestion includes a plain-English description |
 | 🏠 Ollama support | Local AI — no API key, no internet, complete privacy |
 | 🔁 Multi-turn context | Follow-up prompts: "now do the same for /tmp" works |
@@ -370,7 +371,7 @@ yo --version      # Show version
 ## 📁 Code structure
 
 ```
-mang-sh/
+mang/
 ├── src/
 │   ├── main.rs          Entry point, REPL loop, execution, telemetry handle tracking
 │   │                    All 4 exit paths join pending_telemetry before returning
@@ -379,12 +380,14 @@ mang-sh/
 │   ├── prompt_wizard.rs Advanced Prompt Mode — 3-question Socratic dialogue
 │   │                    coach_prompt() → suggest_raw() → synthesise() → suggest_commands()
 │   ├── config.rs        Load/save ~/.config/mang/config.json, interactive setup
-│   ├── shell.rs         ShellKind enum (8 variants), detection matrix, syntax hint
+│   ├── shell.rs         ShellKind enum (8 variants), detection matrix, syntax hint,
+│   │                    builtin_cd() so a bare `cd` persists between commands
+│   ├── safety.rs        Local risk assessment of suggested commands (rm -rf, dd, sudo, …)
 │   ├── context.rs       ConversationContext — rolling window of N prior turns
 │   ├── history.rs       Shell history appending — zsh EXTENDED_HISTORY, bash, fish
 │   ├── shortcuts.rs     ShortcutStore — save/run/forget, persisted to shortcuts.json
 │   ├── updater.rs       Background version check (rate-limited 24h), !update handler
-│   ├── telemetry.rs     JSONBin.io background POST, JoinHandle tracking, MANGDEBUG
+│   ├── telemetry.rs     JSONBin.io background POST, redact() scrubbing, JoinHandle tracking
 │   ├── feedback.rs      !feedback subcommands — setup, on/off, personal, test, about
 │   ├── cli.rs           clap Args — --dry/-d, --no-history, --no-context
 │   └── ui.rs            Banner, help, credits, suggestion display, context summary
@@ -397,7 +400,8 @@ mang-sh/
 ├── uninstall.ps1        Windows uninstaller
 ├── README.md            You're reading it
 ├── INSTALL.md           Full install/update/uninstall reference
-├── CHANGELOG.md         Complete version history (all 13 versions)
+├── AUDIT.md             v3.0.7 audit: claim verification + multi-model benchmark
+├── CHANGELOG.md         Complete version history (every release)
 └── LICENSE              MIT
 ```
 
@@ -493,7 +497,7 @@ The system prompt in `ai.rs::SYSTEM_PROMPT` is a constant string, but it's where
 
 **Why are the rules numbered?** Because LLMs follow numbered lists better than prose paragraphs. The numbered format also makes it easy to reference specific rules when debugging model behaviour.
 
-**Why state the JSON schema twice?** Rule 2 states the schema abstractly. The example restates it concretely. On smaller models like Llama 3.2 7B, having the schema appear only once produced ~60% JSON compliance. Adding a concrete example brought it to ~92%. The redundancy is intentional.
+**Why state the JSON schema twice?** Rule 2 states the schema abstractly. The example restates it concretely. Early informal tests on small local models (Llama 3.2 7B) suggested the schema was followed less reliably when stated only once. Those were casual observations, not a controlled experiment, and the percentages once quoted here were never recorded — treat the redundancy as a cheap precaution rather than a measured gain. The v3.0.7 audit re-checked the prompt on four current models: all four returned strict JSON on every prompt that produced any output (details in [AUDIT.md](AUDIT.md)).
 
 **Why rule 7 (empty commands fallback)?** Without an explicit escape hatch for non-shell requests, the model either invents nonsensical shell commands or produces malformed JSON. Rule 7 gives it a clean output: `{"commands": [], "explanation": "I cannot express this as a shell command."}`. The empty commands array triggers the prompt wizard (v3.0.2+) rather than showing a dead-end error.
 
@@ -662,6 +666,36 @@ pub struct Config {
 
 **The rule:** annotate config fields with `#[serde(default)]` at the point of addition. Retroactive annotation requires a re-release. If you ship without it, the next `!update` sends every existing user into a broken state with no automatic recovery path.
 
+### Bug 6: The comment that lied about file permissions (found in the v3.0.7 audit)
+
+`config.rs` said, in its header, that `config.json` is created `0600`. It never was: `fs::write` obeys the umask, which on most systems produces `0644` — the API key was readable by every local user. Nothing failed, nothing logged; the comment was simply wrong and nobody checked.
+
+**The fix:** create the file with `OpenOptions::mode(0o600)` (so there is no window where it is readable), write to a temp file and `rename` it into place (so a crash cannot leave a truncated config), and tighten any existing file on `load()` so upgraders are fixed too.
+
+**The lesson:** a security property stated in a comment is a claim, not a feature. Write a check for it — the audit's end-to-end run verified the mode went from `644` to `600`.
+
+### Bug 7: Four ways a "confirmed" command could still go wrong (v3.0.7)
+
+1. **Enter meant yes.** `[Y/n]` runs on a bare Enter, which is fine for `ls` and not fine for `rm -rf`. The system prompt asked the model to flag dangerous commands, but in the benchmark the default model returned `kill -9`, `rm -rf` and `chmod -R a+w ~` with no warning at all — and the frontier models also returned risky commands without any in-band warning. **Fix:** `safety.rs`, a local rule table, independent of any model. Flagged commands show the reason and flip the prompt to `[y/N]`.
+2. **Failures did not stop the run.** `["cd build", "rm -rf *"]` kept going after a failed `cd`. **Fix:** stop at the first failing command.
+3. **`cd` did nothing.** Every command runs in its own child shell, so a lone `cd dir` was forgotten before `git branch` ran. The prompt asks models to chain with `&&`; the default model ignored that in the benchmark. **Fix:** a bare `cd <dir>` is applied in-process and later commands inherit it.
+4. **Replay corrupted Windows paths.** The previous turn was re-sent to the model as hand-built JSON that escaped `"` but not `\`, so `C:\Users\…` produced invalid JSON in the next request. **Fix:** build it with `serde_json`.
+
+**The lesson:** an LLM instruction is a request, not an enforcement point. Whatever must always hold belongs in code.
+
+### Bug 8: Reasoning models eat the token budget (v3.0.7)
+
+`max_tokens: 512` was plenty for GPT-4o-mini. Current reasoning models bill their hidden thinking against the same cap: in the audit, Claude Haiku 5.5 returned truncated or empty output on 2 of 14 prompts, and Claude Fable 5.1 returned an empty reply (`finish_reason: content_filter`) on 2 of 14 — both surfaced as the unhelpful "Model returned non-JSON output". **Fix:** 1024 tokens, `reasoning.effort = low` (ignored by models without reasoning), a tolerant JSON extractor that finds the first balanced `{…}` even inside prose or fences, and plain-English messages for the `length` and `content_filter` cases. After the change Haiku returned valid JSON on 14 of 14; the Fable content-filter refusals are provider-side and remain, but are now explained instead of cryptic.
+
+### Bug 9: Small loops that never end (v3.0.7)
+
+- First-run setup ignored end-of-input: `yo < /dev/null` (or cron, or `ssh host yo` without a tty) spun in the "API key cannot be empty" loop — 109 MB of output and a pegged core in five seconds. It now exits with a clear message.
+- The update check was `join()`ed before the first prompt, so with GitHub unreachable (offline, VPN, a firewall dialog waiting for an answer) **every launch** could stall for up to the 6-second timeout. The check now reports over a channel and is polled, never awaited.
+- The updater compared versions with `!=`, so a build newer than `main` was offered a "downgrade". It now compares numerically.
+- The setup menu offered three model slugs that no longer exist on OpenRouter (HTTP 404). Every slug is now checked against the live model list.
+
+**The lesson:** run the unhappy paths — closed stdin, no network, a dead model name — not just the demo.
+
 ---
 
 ## 🤝 Building with Perplexity Computer
@@ -682,7 +716,7 @@ mang.sh was designed and built entirely in collaboration with **[Perplexity Comp
 - Debugging breadth — holding the entire codebase in context when diagnosing a multi-file bug
 - Documentation completeness — writing this README in full
 
-**The result:** 13 versions from v1.0.0 to v3.0.3 in a matter of days. The code compiles, has zero clippy warnings, handles edge cases properly. The architecture decisions reflect real trade-offs between binary size, compile time, correctness, and maintainability.
+**The result:** 13 versions from v1.0.0 to v3.0.3 in a matter of days. The code compiles, passes `cargo clippy -- -D warnings` (re-verified on Rust 1.99 in v3.0.7 — an earlier "zero warnings" claim had silently stopped being true after a toolchain update), and — since v3.0.7 — has a unit-test suite. The architecture decisions reflect real trade-offs between binary size, compile time, correctness, and maintainability.
 
 ### What AI assistance actually looks like
 
@@ -717,7 +751,7 @@ Multi-turn context (follow-up prompts like "now do the same for /tmp") works by 
 ### On prompt engineering for tool-use UIs
 
 **State the output format twice. Really.**
-LLMs attenuate instructions that appeared many tokens ago. Stating the JSON schema once at the top and repeating it in a concrete example dramatically improves compliance, especially on smaller models (tested on Llama 3.2 7B and Mistral 7B where compliance dropped from ~90% to ~60% with single-statement format rules).
+LLMs attenuate instructions that appeared many tokens ago. Stating the JSON schema once at the top and repeating it in a concrete example improves compliance, especially on smaller models. (Early informal tests on Llama 3.2 7B and Mistral 7B pointed that way; no numbers were recorded, so none are quoted. See [AUDIT.md](AUDIT.md) for what has actually been measured.)
 
 **Structured output is load-bearing, not cosmetic.**
 The JSON envelope (`{ "commands": [...], "explanation": "..." }`) is the foundation everything else depends on. Without it, you have to parse freeform text — which means regex, which means edge cases, which means failures. Invest in the system prompt first. The entire suggestion pipeline, command display, execution, history recording, and telemetry all hang off clean parsing.
@@ -736,7 +770,7 @@ Same backend, completely different system prompts. Command generation: `temperat
 
 ### On LLM prompt engineering
 
-**State your output format twice.** LLMs attenuate instructions that appeared many tokens ago. Stating the JSON schema once at the top and again in a concrete example dramatically improves compliance, especially on smaller models.
+**State your output format twice.** LLMs attenuate instructions that appeared many tokens ago. Stating the JSON schema once at the top and again in a concrete example improves compliance, especially on smaller models.
 
 **Structured output is load-bearing, not cosmetic.** The JSON envelope is the foundation everything else depends on. Without it, command extraction is unreliable and the entire pipeline breaks. Invest in the system prompt first.
 
@@ -850,10 +884,12 @@ mang.sh can optionally share anonymised data to improve the AI system prompt. Re
 | Model | `"openai/gpt-4o-mini"` |
 | OS + shell | `"macos"` + `"zsh"` |
 | Worked | `true` |
-| Version | `"v3.0.6"` |
+| Version | `"v3.0.7"` |
 | Timestamp | `"2026-03-23T12:00:00Z"` |
 
-**Never shared:** API keys, file paths, CWD, command output, username, hostname.
+**Never shared:** API keys, working directory (CWD), command output, username, hostname.
+
+**Scrubbed before sending (v3.0.7):** the prompt and commands are free text, so they pass through `redact()` first: API keys and tokens (`sk-…`, `ghp_…`, `Bearer …`, `KEY=value`), e-mail addresses, IPv4 addresses and home-directory paths (`/Users/alice/x` → `~/x`) are replaced with placeholders locally. This is best-effort pattern matching, not a guarantee — the real control is that sharing is opt-in and off by default.
 
 Enable: `!feedback on` · Disable: `!feedback off` · Full settings: `!feedback` · Live test: `!feedback test`
 
@@ -863,13 +899,15 @@ Debug mode: `MANGDEBUG=1 yo`
 
 ## 🔑 OpenRouter model recommendations
 
-| Model | Cost | Best for |
+Measured in the v3.0.7 audit on a 14-prompt suite ([AUDIT.md](AUDIT.md)); prices are OpenRouter list prices per 1M input / output tokens at the time of the audit.
+
+| Model | Price (in / out) | Audit result |
 |---|---|---|
-| `openai/gpt-4o-mini` | ~$0.15/1M tokens | ★ Default — fast, reliable |
-| `openai/gpt-4o` | ~$2.50/1M tokens | Complex multi-step requests |
-| `anthropic/claude-3.5-sonnet` | ~$3/1M tokens | Tricky, context-heavy tasks |
-| `anthropic/claude-3-haiku` | ~$0.25/1M tokens | Speed-critical workflows |
-| `meta-llama/llama-3.3-70b-instruct:free` | Free | Getting started |
+| `openai/gpt-4o-mini` | $0.15 / $0.60 | ★ Default — fastest (≈1.2–1.5 s), cheapest, correct on every checked prompt |
+| `anthropic/claude-haiku-5.5` | $0.10 / $0.50 | Equal quality, slightly more careful commands; reasoning model, needs the v3.0.7 token headroom |
+| `openai/gpt-6.1-sol` | $2 / $10 | Frontier. Same correctness on this suite at about 18× the cost, ≈2.5 s |
+| `anthropic/claude-fable-5.1` | $10 / $50 | Frontier. Same correctness at about 100× the cost; its content filter returned nothing for 2 of 14 prompts |
+| `google/gemma-4-26b-a4b-it:free` | Free | Not benchmarked; free-tier availability changes often |
 
 Get a key: **[openrouter.ai/keys](https://openrouter.ai/keys)**
 
@@ -878,6 +916,22 @@ Get a key: **[openrouter.ai/keys](https://openrouter.ai/keys)**
 ## 📝 Changelog
 
 > Full history: **[CHANGELOG.md](CHANGELOG.md)**
+
+### 🔖 v3.0.7 — 2026-10-29
+- 🔍 **Full audit** — claims verified against the code, benchmarked against current frontier models ([AUDIT.md](AUDIT.md))
+- 🛡️ **Local safety gate** — risky commands show why and default to *No*; execution stops at the first failing command
+- 🔐 Config file now really is `0600` (it was world-readable); telemetry free text is scrubbed of keys, e-mails, IPs and home paths
+- 🐛 Fixed: first-run setup spinning forever when stdin is closed · startup blocked up to 6 s when GitHub was unreachable · `yo --version` printed 3.0.0 · setup menu offered model slugs that no longer exist · "change the model name in config.json" hijacked into setup
+- ♻️ Refactor: one shared confirm/execute path (was copy-pasted five times), one shared HTTP path for both backends, 25 unit tests
+
+### 🔖 v3.0.6 — 2026-06-21
+- 🩺 Smart network-error diagnostics (firewall / Little Snitch / VPN hints) and a manual-update fallback
+
+### 🔖 v3.0.5 — 2026-06-21
+- 🔒 HTTPS fixed on systems without a native TLS stack: `reqwest` now uses `rustls-tls`
+
+### 🔖 v3.0.4 — 2026-03-28
+- 🏷️ Repository renamed to `paulfxyz/mang`; config moves to `~/.config/mang/` with automatic migration
 
 ### 🔖 v3.0.3 — 2026-03-25
 - 🪪 **Credits screen** (`!credits` / `!cr`) — author info, project links, build stack, mythology
@@ -888,13 +942,13 @@ Get a key: **[openrouter.ai/keys](https://openrouter.ai/keys)**
 
 ### 🔖 v3.0.1 — 2026-03-23
 - 🎨 Redesigned banner: clean block-letter `MANG` (cyan) + `.sh` (bold white), `句芒 · Gou Mang · Spirit Messenger` header, minimal dim frame
-- 🔧 Uninstall script: auto-removes legacy `yo-rust` config directories and aliases
+- 🔧 Uninstall script: auto-removes legacy config directories and aliases
 
 ### 🔖 v3.0.0 — 2026-03-23
-- 🏛️ Rebranded from **Yo, Rust!** to **mang.sh** — Gou Mang (句芒), spirit messenger
+- 🏛️ Rebranded as **mang.sh** — Gou Mang (句芒), spirit messenger
 - 🌐 New home: **[mang.sh](https://mang.sh)** · install: `curl -fsSL https://mang.sh/install | bash`
 - 📊 JSONBin collection renamed to `mang-sh-telemetry`
-- 🔍 Zero remaining references to the old name anywhere in the codebase
+- 🔍 No leftover references to the previous name in the codebase
 
 ### 🔖 v2.3.5 — 2026-03-23
 - 🔔 Background update check on every launch · `!update` / `!check` shortcuts
@@ -952,7 +1006,7 @@ I think this is worth saying explicitly, for a few reasons:
 
 **Honesty.** Open-source projects are built on trust. You should know what you're looking at.
 
-**It's genuinely impressive what's possible.** mang.sh went from zero to 13 versions — including a full rebrand, multi-platform support, an AI wizard, a telemetry system, a website in 11 languages, and a properly documented codebase — in a matter of days. That timeline is only possible with AI assistance. Pretending otherwise would undersell what these tools can do.
+**It's genuinely impressive what's possible.** mang.sh went from zero to 19 releases — including a full rebrand, multi-platform support, an AI wizard, a telemetry system, a website in 11 languages, and a properly documented codebase — in a matter of days. That timeline is only possible with AI assistance. Pretending otherwise would undersell what these tools can do.
 
 **The future is already here.** If you're a founder, a hacker, a product person who always had ideas but not enough engineering bandwidth — this is for you. You don't need to be a software engineer to build software anymore. You need taste, judgment, a clear head, and a good working relationship with AI.
 
