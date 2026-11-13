@@ -102,6 +102,55 @@ pub fn assess(commands: &[String]) -> Vec<&'static str> {
 }
 
 // =============================================================================
+//  Double confirmation (added in v3.1.0)
+//
+//  A single flagged command already flips the prompt to [y/N].  One combination
+//  is worse than the sum of its parts: a RECURSIVE / FORCED DELETE running with
+//  ELEVATED PRIVILEGES (`sudo rm -rf …`).  Nothing stops it from touching
+//  system files, and there is no undo.  For that combination the REPL asks a
+//  second, separate question — see main.rs::confirm_run.
+//
+//  The check looks at the whole suggestion, not at one string: `["sudo -v",
+//  "rm -rf build"]` and `sudo sh -c 'rm -rf /opt/x'` are the same risk as
+//  `sudo rm -rf /opt/x` and are treated the same.
+// =============================================================================
+
+/// Patterns for "delete recursively or forcibly" (POSIX, cmd.exe, PowerShell).
+const DELETE_PATTERNS: &[&str] = &[
+    r"\brm\s+(-\w*[rf]\w*|--recursive|--force|--no-preserve-root)",
+    r"\bfind\b.*(-delete\b|-exec\s+rm\b)",
+    r"\b(rd|rmdir)\s+.*/s\b",
+    r"\bdel\s+.*/[sfq]\b",
+    r"\bremove-item\b.*-(recurse|force)\b",
+];
+
+/// Patterns for "runs with elevated privileges".
+const ELEVATION_PATTERNS: &[&str] = &[
+    r"\b(sudo|doas)\b",
+    r"\brunas\b",
+    r"-verb\s+runas\b",
+];
+
+fn compile(patterns: &[&str]) -> Vec<Regex> {
+    patterns
+        .iter()
+        .filter_map(|p| Regex::new(&format!("(?i){p}")).ok())
+        .collect()
+}
+
+/// True when `commands` combine a recursive/forced delete with elevated
+/// privileges and therefore deserve a second confirmation.
+pub fn needs_double_confirm(commands: &[String]) -> bool {
+    static DELETE: OnceLock<Vec<Regex>> = OnceLock::new();
+    static ELEVATE: OnceLock<Vec<Regex>> = OnceLock::new();
+    let delete  = DELETE.get_or_init(|| compile(DELETE_PATTERNS));
+    let elevate = ELEVATE.get_or_init(|| compile(ELEVATION_PATTERNS));
+
+    let any = |set: &[Regex]| commands.iter().any(|c| set.iter().any(|re| re.is_match(c)));
+    any(delete) && any(elevate)
+}
+
+// =============================================================================
 //  Tests — the first unit tests in the project (added by the v3.0.7 audit)
 // =============================================================================
 #[cfg(test)]
@@ -163,6 +212,37 @@ mod tests {
         ] {
             assert!(!flagged(cmd), "unexpected warning for: {cmd}");
         }
+    }
+
+    #[test]
+    fn delete_pattern_tables_compile() {
+        assert_eq!(compile(DELETE_PATTERNS).len(), DELETE_PATTERNS.len());
+        assert_eq!(compile(ELEVATION_PATTERNS).len(), ELEVATION_PATTERNS.len());
+    }
+
+    fn double(cmds: &[&str]) -> bool {
+        needs_double_confirm(&cmds.iter().map(|c| c.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn sudo_plus_rm_rf_needs_two_confirmations() {
+        assert!(double(&["sudo rm -rf /opt/app"]));
+        assert!(double(&["sudo rm -fr ~/old"]));
+        assert!(double(&["doas rm -r /var/tmp/x"]));
+        assert!(double(&["sudo sh -c 'rm -rf /opt/x'"]));
+        assert!(double(&["sudo -v", "rm -rf build"])); // split across commands
+        assert!(double(&["sudo find /var/log -name '*.gz' -delete"]));
+        assert!(double(&["runas /user:Administrator \"cmd /c rd /s /q C:\\x\""]));
+    }
+
+    #[test]
+    fn single_risk_keeps_a_single_confirmation() {
+        assert!(!double(&["rm -rf /tmp/build"]));          // delete, no sudo
+        assert!(!double(&["sudo apt update"]));             // sudo, no delete
+        assert!(!double(&["sudo systemctl restart nginx"]));
+        assert!(!double(&["rm notes.txt"]));                // plain rm
+        assert!(!double(&["ls -la"]));
+        assert!(!double(&[]));
     }
 
     #[test]

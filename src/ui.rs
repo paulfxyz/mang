@@ -415,6 +415,27 @@ pub fn print_risk_warning(reasons: &[&str]) {
 }
 
 // =============================================================================
+//  print_final_check (v3.1.0)
+//
+//  The second confirmation for "recursive delete + elevated privileges".
+//  Repeats the exact commands so the user re-reads what will happen.
+// =============================================================================
+pub fn print_final_check(commands: &[String]) {
+    println!();
+    println!(
+        "  {}  {}",
+        "⛔".red().bold(),
+        "FINAL CHECK — this deletes recursively with elevated privileges. There is no undo."
+            .red()
+            .bold()
+    );
+    for c in commands {
+        println!("     {}  {}", "$".red(), c.white().bold());
+    }
+    println!();
+}
+
+// =============================================================================
 //  print_network_error
 //
 //  Called when an AI request fails with a connection-level error (no HTTP

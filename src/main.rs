@@ -726,7 +726,11 @@ fn poll_update(
 /// * Commands flagged by `safety::assess`: the reasons are printed and the
 ///   prompt flips to `[y/N]` — Enter cancels, and only an explicit `y`/`yes`
 ///   runs them.
-/// * EOF / Ctrl-C at the prompt always means "no".
+/// * (v3.1.0) A recursive/forced delete combined with elevated privileges
+///   (`sudo rm -rf …`) is asked TWICE.  The second question repeats the exact
+///   commands and demands the full word `yes`, so a reflexive `y`, `y` cannot
+///   get through.
+/// * EOF / Ctrl-C at any prompt always means "no".
 fn confirm_run(rl: &mut DefaultEditor, label: &str, commands: &[String]) -> bool {
     let reasons = safety::assess(commands);
     let risky = !reasons.is_empty();
@@ -734,6 +738,7 @@ fn confirm_run(rl: &mut DefaultEditor, label: &str, commands: &[String]) -> bool
         ui::print_risk_warning(&reasons);
     }
 
+    // ── First question ────────────────────────────────────────────────────
     let hint = if risky { "[y/N]" } else { "[Y/n]" };
     loop {
         let ans = match rl.readline(&format!("{} ", format!("  {label} {hint} ›").yellow().bold())) {
@@ -741,11 +746,24 @@ fn confirm_run(rl: &mut DefaultEditor, label: &str, commands: &[String]) -> bool
             Err(_) => return false,
         };
         match ans.as_str() {
-            "y" | "yes"      => return true,
+            "y" | "yes"      => break,
             "n" | "no"       => return false,
-            "" if !risky     => return true,  // Enter accepts only safe commands
+            "" if !risky     => break,        // Enter accepts only safe commands
             "" if risky      => return false, // …and declines risky ones
             _                => println!("{}", "  Please press Y or N.".yellow()),
+        }
+    }
+
+    // ── Second question (only for sudo + rm -rf style combinations) ──────
+    if !safety::needs_double_confirm(commands) {
+        return true;
+    }
+    ui::print_final_check(commands);
+    match rl.readline(&format!("{} ", "  Type yes to run it, anything else cancels ›".red().bold())) {
+        Ok(a) if a.trim().eq_ignore_ascii_case("yes") => true,
+        _ => {
+            println!("{}", "  ◈  Cancelled at the final check — nothing was run.".yellow());
+            false
         }
     }
 }

@@ -10,7 +10,7 @@
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange?style=for-the-badge&logo=rust)](https://www.rust-lang.org/)
 [![Powered by OpenRouter](https://img.shields.io/badge/Powered%20by-OpenRouter-6c47ff?style=for-the-badge)](https://openrouter.ai)
 [![Ollama](https://img.shields.io/badge/Supports-Ollama-black?style=for-the-badge)](https://ollama.ai)
-[![Version](https://img.shields.io/badge/Version-3.0.7-brightgreen?style=for-the-badge)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-3.1.0-brightgreen?style=for-the-badge)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](https://github.com/paulfxyz/mang/pulls)
 
@@ -43,7 +43,7 @@
   ║   ███████║██║  ██║                            ║
   ║   ╚══════╝╚═╝  ╚═╝                            ║
   ║                                               ║
-  ║   v3.0.7  ·  mang.sh  ·  github.com/paulfxyz  ║
+  ║   v3.1.0  ·  mang.sh  ·  github.com/paulfxyz  ║
   ╚═══════════════════════════════════════════════╝
 ```
 
@@ -163,7 +163,7 @@ The misconception: Rust is for operating systems, game engines, embedded firmwar
 | Feature | Detail |
 |---|---|
 | 🗣️ Natural language | Plain English → shell commands via any OpenRouter model or local Ollama |
-| ✅ Always confirms | Nothing runs without your answer. Routine commands are `[Y/n]` (Enter runs); anything that looks destructive — `rm -rf`, `sudo`, `dd`, `curl \| sh`, `git push --force`, … — shows why and flips to `[y/N]`, where Enter cancels |
+| ✅ Always confirms | Nothing runs without your answer. Routine commands are `[Y/n]` (Enter runs); anything that looks destructive — `rm -rf`, `sudo`, `dd`, `curl \| sh`, `git push --force`, … — shows why and flips to `[y/N]`, where Enter cancels. A recursive delete combined with `sudo` (`sudo rm -rf …`) is asked twice: the second time you must type the full word `yes` |
 | 🛡️ Local safety gate | `safety.rs` checks every suggestion against known foot-guns, independent of the AI model |
 | ⚡ Single binary | No Python, Node.js, or runtime — one ~6 MB file, links only libc |
 | 🔑 Local config | API key stored in your OS config directory only |
@@ -884,7 +884,7 @@ mang.sh can optionally share anonymised data to improve the AI system prompt. Re
 | Model | `"openai/gpt-4o-mini"` |
 | OS + shell | `"macos"` + `"zsh"` |
 | Worked | `true` |
-| Version | `"v3.0.7"` |
+| Version | `"v3.1.0"` |
 | Timestamp | `"2026-03-23T12:00:00Z"` |
 
 **Never shared:** API keys, working directory (CWD), command output, username, hostname.
@@ -916,6 +916,9 @@ Get a key: **[openrouter.ai/keys](https://openrouter.ai/keys)**
 ## 📝 Changelog
 
 > Full history: **[CHANGELOG.md](CHANGELOG.md)**
+
+### 🔖 v3.1.0 — 2026-11-13
+- ⛔ **Double confirmation for `sudo` + `rm -rf`.** When one suggestion combines a recursive/forced delete with elevated privileges, mang asks a second, separate question that repeats the commands and requires the full word `yes`. Enter, `y` or anything else cancels. Applies to AI suggestions, refinements and saved shortcuts. Suggested by a user.
 
 ### 🔖 v3.0.7 — 2026-10-29
 - 🔍 **Full audit** — claims verified against the code, benchmarked against current frontier models ([AUDIT.md](AUDIT.md))

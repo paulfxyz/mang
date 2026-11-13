@@ -4,6 +4,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ---
 
+## [3.1.0] — 2026-11-13
+
+### Added — Double confirmation for `sudo` + `rm -rf`
+
+Suggested by a user: a recursive delete running with administrator rights is the
+one combination where a single `y` is not enough.
+
+- When a suggestion contains **both** a recursive/forced delete (`rm -rf`,
+  `rm -r`, `find … -delete`, `rd /s`, `del /s`, `Remove-Item -Recurse`) **and**
+  elevated privileges (`sudo`, `doas`, `runas`, `-Verb RunAs`), mang asks twice.
+- The first question is the usual risk warning with `[y/N]`.
+- The second, a **FINAL CHECK**, repeats the exact commands and asks you to type
+  the full word `yes`. Enter, `y`, or anything else cancels with nothing run.
+- The check looks at the whole suggestion, so `["sudo -v", "rm -rf build"]` and
+  `sudo sh -c 'rm -rf /opt/x'` count the same as `sudo rm -rf /opt/x`.
+- It applies everywhere a confirmation happens: AI suggestions, refined
+  suggestions, the prompt wizard, and saved shortcuts. `--dry` is unaffected.
+- A delete **without** `sudo`, or `sudo` **without** a delete (for example
+  `sudo apt update`), keeps the single confirmation.
+- New `safety::needs_double_confirm()` with unit tests (28 tests in total) and an
+  end-to-end pty check of all four paths: first `y` then Enter, first `y` then
+  `y`, first `y` then `yes`, and the non-sudo case.
+
+---
+
 ## [3.0.7] — 2026-10-29
 
 ### Audit release
